@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="TrialSchema">
+  <!-- Rounded navy badge -->
+  <rect x="0" y="0" width="64" height="64" rx="14" fill="#0B2D6B"/>
+  <!-- Three input dots: green check, teal neutral, mint X (simplified) -->
+  <circle cx="14" cy="18" r="5" fill="#18BFA3"/>
+  <circle cx="14" cy="32" r="5" fill="#00A6B4"/>
+  <circle cx="14" cy="46" r="5" fill="#A8E3CF"/>
+  <!-- Filter triangle (teal) merging to output -->
+  <path d="M28 22 L46 32 L28 42 Z" fill="#00A6B4"/>
+  <!-- Output dot (white = high contrast on navy) -->
+  <circle cx="52" cy="32" r="4.5" fill="#FFFFFF"/>
+</svg>

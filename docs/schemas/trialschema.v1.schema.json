@@ -1,0 +1,371 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trialschema.org/v1/export.schema.json",
+  "title": "TrialSchema Export",
+  "description": "A portable, agent-friendly representation of clinical-trial eligibility designed for automated patient matching. Domain-neutral (oncology, cardiology, metabolic, rare disease, …) and standards-aligned: a deliberate subset of HL7 FHIR R5 ResearchStudy with eligibility-focused additions, FHIR-shaped Codings, and UCUM units. Free-text fallbacks remain valid everywhere so end users never have to hand-curate ontology codes.",
+  "type": "object",
+  "required": ["format", "format_version", "generated_at", "trials"],
+  "additionalProperties": false,
+  "properties": {
+    "format":          { "const": "trialschema" },
+    "format_version":  { "type": "string", "pattern": "^1\\.\\d+$", "description": "Semantic version of the format. Minor versions are additive." },
+    "generated_at":    { "type": "string", "format": "date-time" },
+    "generator":       { "$ref": "#/$defs/Generator" },
+    "trial_count":     { "type": "integer", "minimum": 0 },
+    "trials":          { "type": "array", "items": { "$ref": "#/$defs/Trial" } },
+    "extensions":      { "$ref": "#/$defs/Extensions" }
+  },
+
+  "$defs": {
+
+    "Generator": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name":    { "type": "string" },
+        "version": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+
+    "Extensions": {
+      "type": "object",
+      "description": "Free-form namespaced extension bag. Implementers SHOULD prefix keys with their own reverse-DNS namespace, e.g. \"org.example.foo\".",
+      "additionalProperties": true
+    },
+
+    "Coding": {
+      "type": "object",
+      "description": "FHIR-shaped reference to a concept in a terminology. Every field is optional; `text` alone is a valid free-text fallback so end users are never required to fill in ontology codes.",
+      "properties": {
+        "system":  { "type": "string", "format": "uri", "description": "Canonical URI of the terminology, e.g. http://loinc.org, http://snomed.info/sct, http://www.nlm.nih.gov/research/umls/rxnorm, http://hl7.org/fhir/sid/icd-10, http://www.genenames.org" },
+        "code":    { "type": "string" },
+        "display": { "type": "string", "description": "Human-readable label as it appears in the terminology." },
+        "text":    { "type": "string", "description": "User-facing free-text label. Always allowed; required when neither system+code nor display are set." }
+      },
+      "anyOf": [
+        { "required": ["system", "code"] },
+        { "required": ["text"] },
+        { "required": ["display"] }
+      ],
+      "additionalProperties": false
+    },
+
+    "Identifier": {
+      "type": "object",
+      "required": ["system", "value"],
+      "properties": {
+        "system": { "type": "string", "format": "uri" },
+        "value":  { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+
+    "Quantity": {
+      "type": "object",
+      "description": "FHIR-shaped numeric quantity. UCUM is recommended for `system`+`code`; `unit` is the human-readable label.",
+      "required": ["value"],
+      "properties": {
+        "value":  { "type": "number" },
+        "unit":   { "type": "string", "description": "Human-readable unit (e.g. \"mL/min\", \"years\", \"%\")." },
+        "system": { "type": "string", "format": "uri", "default": "http://unitsofmeasure.org" },
+        "code":   { "type": "string", "description": "UCUM (or other system) code, e.g. \"a\" for years, \"mg/dL\", \"L/min\"." }
+      },
+      "additionalProperties": false
+    },
+
+    "Trial": {
+      "type": "object",
+      "$comment": "FHIR R5: ResearchStudy.",
+      "required": ["id", "kind", "enabled", "criteria"],
+      "additionalProperties": false,
+      "properties": {
+        "id":          { "type": "string", "description": "Stable primary key. Typically an NCT id; any unique string is allowed.", "$comment": "FHIR R5: ResearchStudy.identifier (primary)." },
+        "kind":        { "const": "trial" },
+        "enabled":     { "type": "boolean", "default": true, "description": "Whether the matcher should consider this trial. Independent of recruitment status." },
+        "title":       { "type": "string", "$comment": "FHIR R5: ResearchStudy.title." },
+        "identifiers": { "type": "array", "items": { "$ref": "#/$defs/Identifier" }, "$comment": "FHIR R5: ResearchStudy.identifier." },
+
+        "phase": {
+          "type": "string",
+          "description": "Trial phase, FHIR-aligned vocabulary.",
+          "$comment": "FHIR R5: ResearchStudy.phase (ValueSet/research-study-phase).",
+          "enum": [
+            "n-a",
+            "early-phase-1",
+            "phase-1",
+            "phase-1-2",
+            "phase-2",
+            "phase-2-3",
+            "phase-3",
+            "phase-4",
+            "unknown"
+          ]
+        },
+
+        "sponsor": {
+          "type": "object",
+          "$comment": "FHIR R5: ResearchStudy.associatedParty[role=sponsor].",
+          "additionalProperties": false,
+          "properties": {
+            "name":       { "type": "string" },
+            "identifier": { "$ref": "#/$defs/Identifier" }
+          }
+        },
+
+        "conditions":    { "type": "array", "items": { "$ref": "#/$defs/Coding" }, "$comment": "FHIR R5: ResearchStudy.condition." },
+        "interventions": { "type": "array", "items": { "$ref": "#/$defs/Intervention" }, "$comment": "FHIR R5: ResearchStudy.focus (with type=intervention)." },
+
+        "enrollment": {
+          "type": "object",
+          "$comment": "FHIR R5: ResearchStudy.recruitment.targetNumber.",
+          "additionalProperties": false,
+          "properties": {
+            "target": { "type": "integer", "minimum": 0 }
+          }
+        },
+
+        "lifecycle": {
+          "type": "object",
+          "$comment": "FHIR R5: ResearchStudy.status + ResearchStudy.period.",
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "type": "string",
+              "description": "Recruitment / lifecycle status. FHIR ResearchStudy.status-aligned.",
+              "enum": [
+                "not-yet-recruiting",
+                "recruiting",
+                "active-not-recruiting",
+                "completed",
+                "suspended",
+                "terminated",
+                "withdrawn",
+                "unknown"
+              ]
+            },
+            "start_date":              { "$ref": "#/$defs/PartialDate" },
+            "primary_completion_date": { "$ref": "#/$defs/PartialDate" },
+            "completion_date":         { "$ref": "#/$defs/PartialDate" }
+          }
+        },
+
+        "care_path": { "$ref": "#/$defs/CarePath" },
+        "criteria":  { "type": "array", "items": { "$ref": "#/$defs/Criterion" }, "description": "Ordered list. Array index === run order; the first criterion runs first.", "$comment": "FHIR R5: ResearchStudy.recruitment.eligibility (resolved). v1 represents each criterion inline rather than via a Group reference." },
+
+        "extensions": { "$ref": "#/$defs/Extensions" }
+      }
+    },
+
+    "PartialDate": {
+      "type": "string",
+      "description": "ISO-8601 date with optional precision: YYYY, YYYY-MM, or YYYY-MM-DD. Empty string means unknown.",
+      "pattern": "^$|^\\d{4}(-\\d{2}(-\\d{2})?)?$"
+    },
+
+    "Intervention": {
+      "type": "object",
+      "required": ["type", "label"],
+      "additionalProperties": false,
+      "properties": {
+        "type":  {
+          "type": "string",
+          "enum": ["drug", "device", "procedure", "biological", "behavioral", "radiation", "diagnostic-test", "other"]
+        },
+        "label": { "type": "string" },
+        "code":  { "$ref": "#/$defs/Coding" }
+      }
+    },
+
+    "CarePath": {
+      "type": "object",
+      "$comment": "FHIR R5: PlanDefinition (template). Optional. Populate only when the trial maps to a recognised standard clinical pathway (e.g. oncology, RT, structured chronic-disease management). For trials without a clear pathway, omit this field.",
+      "additionalProperties": false,
+      "properties": {
+        "id":      { "type": "string", "description": "Stable id within this export's care-path enum." },
+        "label":   { "type": "string" },
+        "concept": { "$ref": "#/$defs/Coding", "description": "Optional disease-domain anchor (typically a SNOMED CT code)." },
+        "phases": {
+          "type": "array",
+          "$comment": "FHIR R5: PlanDefinition.action[] (each phase is a top-level action).",
+          "items": { "$ref": "#/$defs/CarePathPhase" }
+        }
+      }
+    },
+
+    "CarePathPhase": {
+      "type": "object",
+      "required": ["id", "label"],
+      "additionalProperties": false,
+      "properties": {
+        "id":              { "type": "string" },
+        "label":           { "type": "string" },
+        "description":     { "type": "string" },
+        "duration":        { "$ref": "#/$defs/Duration" },
+        "key_activities":  { "type": "array", "items": { "type": "string" } }
+      }
+    },
+
+    "Criterion": {
+      "type": "object",
+      "required": ["id", "kind", "enabled", "rank", "source_text", "concept", "assertion", "constraint", "routing"],
+      "additionalProperties": false,
+      "properties": {
+        "id":             { "type": "string", "description": "Stable identifier within the trial. Default convention: \"INC-01\", \"EXC-01\", …" },
+        "kind":           { "type": "string", "enum": ["inclusion", "exclusion"] },
+        "enabled":        { "type": "boolean", "default": true, "description": "User toggle. Disabled criteria MUST be skipped by the matcher." },
+        "rank":           { "type": "integer", "minimum": 1, "description": "1..N position in the run order. Lower runs first." },
+
+        "source_text":     { "type": "string", "description": "Verbatim original criterion text. Immutable after extraction." },
+        "clarified_text":  { "type": ["string", "null"], "description": "Optional LLM-rewritten, unambiguous version of the criterion. Consumers SHOULD prefer `clarified_text ?? source_text`." },
+
+        "concept":   { "$ref": "#/$defs/Concept" },
+        "assertion": {
+          "type": "string",
+          "enum": ["present", "absent", "unknown"],
+          "description": "Whether the criterion asserts the concept's presence (`present`), its absence (`absent`, e.g. \"no history of …\"), or makes no assertion (`unknown`)."
+        },
+
+        "constraint":  { "$ref": "#/$defs/Constraint" },
+
+        "routing":   { "$ref": "#/$defs/Routing" },
+        "guidance":  { "type": "string", "description": "Free-text guidance for the matching agent. Strongly recommended when the routing includes \"other\"." },
+
+        "provenance": { "$ref": "#/$defs/Provenance" },
+        "extensions": { "$ref": "#/$defs/Extensions" }
+      }
+    },
+
+    "Concept": {
+      "type": "object",
+      "required": ["domain"],
+      "additionalProperties": false,
+      "description": "What the criterion is about, decoupled from where to look (which lives in `routing`).",
+      "properties": {
+        "domain": {
+          "type": "string",
+          "description": "High-level clinical category. Influences how the matcher fetches data.",
+          "enum": [
+            "demographics",
+            "condition",
+            "observation",
+            "medication",
+            "procedure",
+            "adverse-event",
+            "genomic",
+            "consent",
+            "logistic",
+            "other"
+          ]
+        },
+        "code": { "$ref": "#/$defs/Coding", "description": "Best-effort code in a recognised terminology (LOINC for observations, SNOMED CT for conditions/procedures, RxNorm/ATC for medications, HGNC for genes, ICD-10/-11 for diagnoses). Optional." },
+        "text": { "type": "string", "description": "Human-readable concept name (e.g. \"Creatinine clearance\", \"ECOG performance status\"). Always allowed." }
+      }
+    },
+
+    "Constraint": {
+      "type": "object",
+      "description": "Tagged union describing how the criterion evaluates against patient data. Use `kind: \"text\"` as a graceful fallback when no machine-evaluable form is available.",
+      "discriminator": { "propertyName": "kind" },
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind", "operator", "quantity"],
+          "additionalProperties": false,
+          "properties": {
+            "kind":     { "const": "comparison" },
+            "operator": { "type": "string", "enum": ["<", "<=", "=", ">=", ">", "!="] },
+            "quantity": { "$ref": "#/$defs/Quantity" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "range" },
+            "low":  { "$ref": "#/$defs/Quantity" },
+            "high": { "$ref": "#/$defs/Quantity" }
+          },
+          "anyOf": [{ "required": ["low"] }, { "required": ["high"] }]
+        },
+        {
+          "type": "object",
+          "required": ["kind", "values"],
+          "additionalProperties": false,
+          "properties": {
+            "kind":   { "const": "code-set" },
+            "match":  { "type": "string", "enum": ["any", "all", "none"], "default": "any" },
+            "values": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/Coding" } }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "value"],
+          "additionalProperties": false,
+          "properties": {
+            "kind":  { "const": "boolean" },
+            "value": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "exists" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "description"],
+          "additionalProperties": false,
+          "description": "Free-text fallback. Always valid; the matcher will treat the criterion as LLM-judgement-required.",
+          "properties": {
+            "kind":        { "const": "text" },
+            "description": { "type": "string" }
+          }
+        }
+      ]
+    },
+
+    "Routing": {
+      "type": "object",
+      "description": "Pragmatic cost-optimization layer above the schema: which patient-record document types the matcher should search first (`primary`) before falling back (`fallback`). Empty arrays mean no preference.",
+      "required": ["primary", "fallback"],
+      "additionalProperties": false,
+      "properties": {
+        "primary":  { "type": "array", "items": { "$ref": "#/$defs/DocumentType" }, "uniqueItems": true },
+        "fallback": { "type": "array", "items": { "$ref": "#/$defs/DocumentType" }, "uniqueItems": true }
+      }
+    },
+
+    "DocumentType": {
+      "type": "string",
+      "description": "Controlled vocabulary of document types the matcher recognises. System: https://trialschema.org/v1/document-types",
+      "enum": [
+        "intake-notes",
+        "referral-letters",
+        "mdo-notes",
+        "pathology",
+        "imaging",
+        "treatment-history",
+        "molecular-genomic",
+        "core-lab",
+        "other"
+      ]
+    },
+
+    "Provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "extracted_at":  { "type": "string", "format": "date-time" },
+        "extracted_by":  { "type": "string", "description": "Identifier of the model / tool that produced this criterion, e.g. \"openai/gpt-4o-mini\" or \"manual\"." },
+        "clarified_at":  { "type": "string", "format": "date-time" },
+        "clarified_by":  { "type": "string" }
+      }
+    }
+
+  }
+}

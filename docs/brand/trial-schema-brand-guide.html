@@ -1,0 +1,441 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Trial Schema Brand Guide</title>
+  <meta name="description" content="Brand guide for Trial Schema, a clinical trial schema and AI matching tool." />
+  <style>
+    :root {
+      --ts-navy: #0B2D6B;
+      --ts-teal: #00A6B4;
+      --ts-green: #18BFA3;
+      --ts-mint: #A8E3CF;
+      --ts-ice: #EAF8FB;
+      --ts-white: #FFFFFF;
+      --ts-ink: #071A3A;
+      --ts-muted: #5D6E89;
+      --ts-border: rgba(11, 45, 107, 0.14);
+      --ts-font: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --ts-radius: 24px;
+      --ts-shadow: 0 24px 80px rgba(11, 45, 107, 0.12);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: var(--ts-font);
+      color: var(--ts-ink);
+      background:
+        radial-gradient(circle at top left, rgba(0, 166, 180, 0.12), transparent 32rem),
+        linear-gradient(180deg, #ffffff 0%, #f6fbfd 100%);
+      line-height: 1.6;
+    }
+
+    .page {
+      width: min(1120px, calc(100% - 40px));
+      margin: 0 auto;
+      padding: 56px 0 80px;
+    }
+
+    header {
+      display: grid;
+      gap: 28px;
+      grid-template-columns: 1.1fr 0.9fr;
+      align-items: center;
+      margin-bottom: 56px;
+    }
+
+    @media (max-width: 820px) {
+      header {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .eyebrow {
+      color: var(--ts-teal);
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      font-size: 0.78rem;
+      margin-bottom: 12px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(2.4rem, 6vw, 5rem);
+      line-height: 0.95;
+      letter-spacing: -0.07em;
+      color: var(--ts-navy);
+    }
+
+    h1 span {
+      color: var(--ts-teal);
+    }
+
+    .lede {
+      margin: 22px 0 0;
+      font-size: 1.15rem;
+      color: var(--ts-muted);
+      max-width: 680px;
+    }
+
+    h2 {
+      margin: 0 0 18px;
+      color: var(--ts-navy);
+      font-size: clamp(1.6rem, 3vw, 2.2rem);
+      letter-spacing: -0.04em;
+      line-height: 1.1;
+    }
+
+    h3 {
+      margin: 28px 0 10px;
+      color: var(--ts-navy);
+      font-size: 1.1rem;
+      letter-spacing: -0.02em;
+    }
+
+    p {
+      margin: 0 0 14px;
+    }
+
+    ul, ol {
+      margin-top: 8px;
+      padding-left: 1.25rem;
+    }
+
+    code {
+      background: rgba(11, 45, 107, 0.07);
+      color: var(--ts-navy);
+      padding: 0.12rem 0.32rem;
+      border-radius: 6px;
+      font-size: 0.92em;
+    }
+
+    pre {
+      overflow: auto;
+      padding: 20px;
+      border-radius: 18px;
+      background: #071A3A;
+      color: #EAF8FB;
+      font-size: 0.9rem;
+      line-height: 1.5;
+    }
+
+    pre code {
+      background: transparent;
+      color: inherit;
+      padding: 0;
+    }
+
+    .card {
+      background: rgba(255, 255, 255, 0.88);
+      border: 1px solid var(--ts-border);
+      border-radius: var(--ts-radius);
+      box-shadow: var(--ts-shadow);
+      padding: 28px;
+      backdrop-filter: blur(12px);
+    }
+
+    .logo-card {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 300px;
+    }
+
+    .brand-logo {
+      width: min(100%, 560px);
+      height: auto;
+    }
+
+    section {
+      margin: 28px 0;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 22px;
+    }
+
+    @media (max-width: 780px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .full {
+      grid-column: 1 / -1;
+    }
+
+    .tokens {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    @media (max-width: 780px) {
+      .tokens {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .swatch {
+      border: 1px solid var(--ts-border);
+      border-radius: 18px;
+      overflow: hidden;
+      background: white;
+    }
+
+    .swatch-color {
+      height: 84px;
+    }
+
+    .swatch-body {
+      padding: 14px 16px;
+    }
+
+    .swatch strong {
+      display: block;
+      color: var(--ts-navy);
+    }
+
+    .swatch small {
+      display: block;
+      color: var(--ts-muted);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      margin-top: 2px;
+    }
+
+    .pill-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .pill {
+      border: 1px solid var(--ts-border);
+      color: var(--ts-navy);
+      background: white;
+      border-radius: 999px;
+      padding: 8px 12px;
+      font-size: 0.92rem;
+      font-weight: 700;
+    }
+
+    .prompt-box {
+      white-space: pre-wrap;
+      border-radius: 18px;
+      background: #071A3A;
+      color: #EAF8FB;
+      padding: 22px;
+      overflow: auto;
+      font-size: 0.92rem;
+    }
+
+    .usage {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 14px;
+      margin-top: 14px;
+    }
+
+    @media (max-width: 780px) {
+      .usage {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .mini {
+      padding: 18px;
+      border-radius: 18px;
+      background: var(--ts-ice);
+      border: 1px solid var(--ts-border);
+    }
+
+    .mini strong {
+      color: var(--ts-navy);
+    }
+
+    footer {
+      color: var(--ts-muted);
+      margin-top: 48px;
+      text-align: center;
+      font-size: 0.95rem;
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header>
+      <div>
+        <div class="eyebrow">Brand Guide</div>
+        <h1>Trial <span>Schema</span></h1>
+        <p class="lede">
+          A modern clinical AI brand system for structuring trial inclusion and exclusion criteria into agent-readable schemas.
+        </p>
+      </div>
+
+      <div class="card logo-card" aria-label="Trial Schema logo preview">
+        <svg class="brand-logo" viewBox="0 0 650 180" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Trial Schema logo">
+          <circle cx="52" cy="42" r="22" fill="#18BFA3"/>
+          <path d="M42 42.5L49.5 50L64 35" stroke="white" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+
+          <circle cx="52" cy="90" r="22" fill="#00A6B4"/>
+
+          <circle cx="52" cy="138" r="22" fill="#A8E3CF"/>
+          <path d="M43 129L61 147M61 129L43 147" stroke="white" stroke-width="7" stroke-linecap="round"/>
+
+          <path d="M88 42H142C154 42 160 50 160 62V74" stroke="#0B2D6B" stroke-width="9" stroke-linecap="round"/>
+          <path d="M88 90H166" stroke="#0B2D6B" stroke-width="9" stroke-linecap="round"/>
+          <path d="M88 138H142C154 138 160 130 160 118V106" stroke="#0B2D6B" stroke-width="9" stroke-linecap="round"/>
+
+          <path d="M160 64L224 90L160 116V64Z" fill="#00A6B4"/>
+          <path d="M224 90H252" stroke="#0B2D6B" stroke-width="9" stroke-linecap="round"/>
+          <circle cx="280" cy="90" r="22" fill="#0B2D6B"/>
+
+          <text x="330" y="82" font-family="Inter, system-ui, sans-serif" font-size="54" font-weight="800" fill="#0B2D6B">Trial</text>
+          <text x="330" y="135" font-family="Inter, system-ui, sans-serif" font-size="54" font-weight="800" fill="#00A6B4">Schema</text>
+        </svg>
+      </div>
+    </header>
+
+    <section class="grid">
+      <div class="card">
+        <h2>Brand Essence</h2>
+        <p><strong>Trial Schema</strong> is a clinical-trial matching infrastructure tool that transforms inclusion and exclusion criteria into structured schemas for AI agents.</p>
+        <p>The brand should feel clinical, structured, intelligent, trustworthy, modern, precise, and developer-friendly.</p>
+        <p>Avoid generic healthcare clichés. The identity should feel like a high-quality health-tech SaaS platform, not a hospital or pharmaceutical brand.</p>
+      </div>
+
+      <div class="card">
+        <h2>Logo Concept</h2>
+        <p>The logo communicates clinical trial logic, schema structure, and agent matching.</p>
+        <ul>
+          <li>Three stacked input nodes represent trial criteria.</li>
+          <li>A checkmark represents inclusion.</li>
+          <li>An X represents exclusion.</li>
+          <li>A merge/filter shape represents schema transformation.</li>
+          <li>An output node represents the matched result.</li>
+        </ul>
+      </div>
+
+      <div class="card full">
+        <h2>Color Palette</h2>
+        <div class="tokens">
+          <div class="swatch"><div class="swatch-color" style="background:#0B2D6B"></div><div class="swatch-body"><strong>Deep Clinical Navy</strong><small>#0B2D6B</small></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#00A6B4"></div><div class="swatch-body"><strong>Intelligent Teal</strong><small>#00A6B4</small></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#18BFA3"></div><div class="swatch-body"><strong>Inclusion Green</strong><small>#18BFA3</small></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#A8E3CF"></div><div class="swatch-body"><strong>Soft Exclusion Mint</strong><small>#A8E3CF</small></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#EAF8FB"></div><div class="swatch-body"><strong>Clinical Ice Blue</strong><small>#EAF8FB</small></div></div>
+          <div class="swatch"><div class="swatch-color" style="background:#071A3A"></div><div class="swatch-body"><strong>Near Black Blue</strong><small>#071A3A</small></div></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Typography</h2>
+        <p>Use <strong>Inter</strong> as the primary typeface.</p>
+        <ul>
+          <li>Inter SemiBold for the logo wordmark</li>
+          <li>Inter Bold for headings</li>
+          <li>Inter Medium for navigation and buttons</li>
+          <li>Inter Regular for body text</li>
+        </ul>
+        <pre><code>font-family: "Inter", system-ui, sans-serif;
+font-weight: 700;
+letter-spacing: -0.03em;</code></pre>
+      </div>
+
+      <div class="card">
+        <h2>Logo Usage</h2>
+        <div class="usage">
+          <div class="mini"><strong>Primary</strong><br>Website header, hero, docs, dashboards.</div>
+          <div class="mini"><strong>Icon Only</strong><br>Sidebar, avatar, loading states.</div>
+          <div class="mini"><strong>Favicon</strong><br>Use simplified icon only. No text.</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Visual Style</h2>
+        <p>Use flat vector geometry, rounded connectors, node-based diagrams, spacious white backgrounds, and subtle shadows.</p>
+        <p>Avoid caduceus symbols, stethoscopes, pills, hospital crosses, overdone DNA visuals, and cartoon robots.</p>
+      </div>
+
+      <div class="card">
+        <h2>Voice & Tone</h2>
+        <p>Precise but not cold. Clinical but not sterile. Technical but not intimidating. Trustworthy but modern.</p>
+        <div class="pill-row">
+          <span class="pill">Structured</span>
+          <span class="pill">Reliable</span>
+          <span class="pill">Agent-ready</span>
+          <span class="pill">Explainable</span>
+          <span class="pill">Clinical-grade</span>
+          <span class="pill">Machine-readable</span>
+        </div>
+      </div>
+
+      <div class="card full">
+        <h2>Design Agent Prompt</h2>
+        <div class="prompt-box">Create a modern vector logo system for a health-tech SaaS product called “Trial Schema”.
+
+The product helps convert clinical trial inclusion and exclusion criteria into structured schemas that AI agents can use for patient-trial matching.
+
+Design a clean, professional logo that combines clinical trial logic, schema structure, and agent-based matching. Use an abstract flowchart/filter icon: three input nodes stacked vertically on the left, with a checkmark for inclusion, an X for exclusion, and a neutral middle node. Connect the nodes with rounded lines into a central merge/filter shape, ending in a final output node on the right.
+
+Create a horizontal logo lockup with the icon plus the wordmark “Trial Schema”. Make “Trial” deep navy and “Schema” teal. Use a modern sans-serif typeface similar to Inter SemiBold or Inter Bold.
+
+Also create an icon-only version and a simplified favicon/app-icon version. The favicon must be readable at 16px and 32px.
+
+Use this palette:
+- Deep navy: #0B2D6B
+- Teal: #00A6B4
+- Inclusion green: #18BFA3
+- Soft mint: #A8E3CF
+- Ice blue: #EAF8FB
+- White: #FFFFFF
+
+The style should be flat, minimal, geometric, trustworthy, and modern. It should feel like a serious clinical AI infrastructure product, not a generic medical brand. Avoid caduceus, stethoscope, pills, hospital crosses, DNA clichés, or cartoon robots.
+
+Deliver:
+1. Primary horizontal logo
+2. Icon-only logo
+3. Square favicon/app icon
+4. Light background version
+5. Dark background version
+6. SVG-ready vector shapes
+7. Basic brand sheet with palette and typography</div>
+      </div>
+
+      <div class="card full">
+        <h2>CSS Tokens</h2>
+        <pre><code>:root {
+  --ts-navy: #0B2D6B;
+  --ts-teal: #00A6B4;
+  --ts-green: #18BFA3;
+  --ts-mint: #A8E3CF;
+  --ts-ice: #EAF8FB;
+  --ts-white: #FFFFFF;
+  --ts-ink: #071A3A;
+
+  --ts-font: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+
+  --ts-radius-sm: 8px;
+  --ts-radius-md: 14px;
+  --ts-radius-lg: 24px;
+
+  --ts-shadow-soft: 0 18px 50px rgba(11, 45, 107, 0.12);
+}</code></pre>
+      </div>
+    </section>
+
+    <footer>
+      Trial Schema brand guide — structured clinical AI identity system.
+    </footer>
+  </main>
+</body>
+</html>

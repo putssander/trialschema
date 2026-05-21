@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180" role="img" aria-label="TrialSchema mark">
+  <!-- Three input criterion nodes -->
+  <circle cx="52" cy="42"  r="22" fill="#18BFA3"/>
+  <path  d="M42 42.5L49.5 50L64 35" stroke="white" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <circle cx="52" cy="90"  r="22" fill="#00A6B4"/>
+  <circle cx="52" cy="138" r="22" fill="#A8E3CF"/>
+  <path  d="M43 129L61 147M61 129L43 147" stroke="white" stroke-width="7" stroke-linecap="round" fill="none"/>
+  <!-- Connectors → filter -->
+  <path d="M88 42H142C154 42 160 50 160 62V74"   stroke="#0B2D6B" stroke-width="9" stroke-linecap="round" fill="none"/>
+  <path d="M88 90H166"                              stroke="#0B2D6B" stroke-width="9" stroke-linecap="round" fill="none"/>
+  <path d="M88 138H142C154 138 160 130 160 118V106" stroke="#0B2D6B" stroke-width="9" stroke-linecap="round" fill="none"/>
+  <!-- Filter / merge -->
+  <path d="M160 64L224 90L160 116V64Z" fill="#00A6B4"/>
+  <!-- Output -->
+  <path d="M224 90H252" stroke="#0B2D6B" stroke-width="9" stroke-linecap="round" fill="none"/>
+  <circle cx="280" cy="90" r="22" fill="#0B2D6B"/>
+</svg>

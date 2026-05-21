@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" role="img" aria-label="TrialSchema social card">
+  <defs>
+    <radialGradient id="g1" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(80 60) scale(800 800)">
+      <stop offset="0" stop-color="#00A6B4" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1200" height="630" fill="#FFFFFF"/>
+  <rect width="1200" height="630" fill="url(#g1)"/>
+  <!-- Top accent bar -->
+  <rect x="0" y="0" width="1200" height="6" fill="#0B2D6B"/>
+  <!-- Logo lockup (scaled) -->
+  <g transform="translate(80 180) scale(1.4)">
+    <circle cx="52" cy="42"  r="22" fill="#18BFA3"/>
+    <path  d="M42 42.5L49.5 50L64 35" stroke="white" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+    <circle cx="52" cy="90"  r="22" fill="#00A6B4"/>
+    <circle cx="52" cy="138" r="22" fill="#A8E3CF"/>
+    <path  d="M43 129L61 147M61 129L43 147" stroke="white" stroke-width="7" stroke-linecap="round" fill="none"/>
+    <path d="M88 42H142C154 42 160 50 160 62V74"   stroke="#0B2D6B" stroke-width="9" stroke-linecap="round" fill="none"/>
+    <path d="M88 90H166"                              stroke="#0B2D6B" stroke-width="9" stroke-linecap="round" fill="none"/>
+    <path d="M88 138H142C154 138 160 130 160 118V106" stroke="#0B2D6B" stroke-width="9" stroke-linecap="round" fill="none"/>
+    <path d="M160 64L224 90L160 116V64Z" fill="#00A6B4"/>
+    <path d="M224 90H252" stroke="#0B2D6B" stroke-width="9" stroke-linecap="round" fill="none"/>
+    <circle cx="280" cy="90" r="22" fill="#0B2D6B"/>
+  </g>
+  <!-- Wordmark + tagline -->
+  <text x="80" y="500" font-family="Inter, system-ui, sans-serif" font-size="92" font-weight="800" fill="#0B2D6B" letter-spacing="-3">Trial<tspan fill="#00A6B4">Schema</tspan></text>
+  <text x="80" y="560" font-family="Inter, system-ui, sans-serif" font-size="28" font-weight="500" fill="#5D6E89">Clinical-trial eligibility, structured for AI matching.</text>
+</svg>

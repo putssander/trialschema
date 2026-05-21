@@ -1,0 +1,438 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TrialSchema · v1 Reference</title>
+  <meta name="description" content="The TrialSchema v1 format: a portable, agent-ready representation of clinical-trial eligibility for AI agents and automated matching systems." />
+  <link rel="icon" type="image/svg+xml" href="docs/brand/favicon.svg" />
+  <meta name="theme-color" content="#0B2D6B" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    :root { --ts-navy:#0B2D6B; --ts-teal:#00A6B4; --ts-green:#18BFA3; --ts-mint:#A8E3CF; --ts-ice:#EAF8FB; --ts-ink:#071A3A; --ts-muted:#5D6E89; }
+    body { font-family: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; letter-spacing:-0.005em; }
+    h1, h2, h3 { letter-spacing: -0.03em; }
+    pre, code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+    pre { line-height: 1.55; }
+    .k { color: #0369a1; }
+    .s { color: #047857; }
+    .n { color: #b45309; }
+    .b { color: #7c3aed; }
+    .c { color: #64748b; font-style: italic; }
+    .anchor-target { scroll-margin-top: 80px; }
+    table.field-table th, table.field-table td { padding: .55rem .8rem; vertical-align: top; font-size: 13px; }
+    table.field-table tr + tr td { border-top: 1px solid #e2e8f0; }
+    table.field-table code { font-size: 11.5px; background: #f1f5f9; padding: 1px 5px; border-radius: 4px; }
+    .pill { display:inline-block; font-size:10.5px; padding:1px 7px; border-radius:9999px; font-weight:600; }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-800">
+
+  <header class="sticky top-0 z-30 backdrop-blur bg-white/85 border-b border-slate-200">
+    <div class="max-w-5xl mx-auto px-6 py-3 flex items-center gap-4">
+      <a href="index.html" class="flex items-center gap-3 group">
+        <img src="docs/brand/favicon.svg" alt="" class="w-9 h-9 rounded-xl shadow-sm" />
+        <div class="leading-tight">
+          <div class="text-lg font-extrabold tracking-tight" style="color:var(--ts-navy)">Trial<span style="color:var(--ts-teal)" class="group-hover:opacity-80">Schema</span></div>
+          <div class="text-[11px] uppercase tracking-wider text-slate-500">Format Reference · v1.0</div>
+        </div>
+      </a>
+      <a href="index.html" class="ml-auto inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600 hover:text-slate-900 px-2.5 py-1.5 rounded-lg hover:bg-slate-100">
+        <svg viewBox="0 0 24 24" class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        Back to app
+      </a>
+    </div>
+  </header>
+
+  <div class="max-w-5xl mx-auto px-6 py-8 grid grid-cols-12 gap-6">
+
+    <!-- TOC -->
+    <nav class="col-span-12 md:col-span-3">
+      <div class="sticky top-20 text-[12px] space-y-1">
+        <div class="text-[10px] uppercase tracking-wider font-bold text-slate-500 mb-1">On this page</div>
+        <a href="#overview"   class="block px-2 py-1 rounded hover:bg-slate-100 text-slate-700">1. Overview</a>
+        <a href="#design"     class="block px-2 py-1 rounded hover:bg-slate-100 text-slate-700">2. Design principles</a>
+        <a href="#envelope"   class="block px-2 py-1 rounded hover:bg-slate-100 text-slate-700">3. Export envelope</a>
+        <a href="#primitives" class="block px-2 py-1 rounded hover:bg-slate-100 text-slate-700">4. Primitives</a>
+        <a href="#trial"      class="block px-2 py-1 rounded hover:bg-slate-100 text-slate-700">5. Trial</a>
+        <a href="#criterion"  class="block px-2 py-1 rounded hover:bg-slate-100 text-slate-700">6. Criterion</a>
+        <a href="#constraint" class="block px-2 py-1 rounded hover:bg-slate-100 text-slate-700">7. Constraints</a>
+        <a href="#routing"    class="block px-2 py-1 rounded hover:bg-slate-100 text-slate-700">8. Routing</a>
+        <a href="#carepath"   class="block px-2 py-1 rounded hover:bg-slate-100 text-slate-700">9. Care path</a>
+        <a href="#example"    class="block px-2 py-1 rounded hover:bg-slate-100 text-slate-700">10. Full example</a>
+        <a href="#alignment"  class="block px-2 py-1 rounded hover:bg-slate-100 text-slate-700">11. FHIR &amp; standards alignment</a>
+        <a href="#ingest"     class="block px-2 py-1 rounded hover:bg-slate-100 text-slate-700">12. Ingesting CT.gov</a>
+        <a href="#versioning" class="block px-2 py-1 rounded hover:bg-slate-100 text-slate-700">13. Versioning</a>
+      </div>
+    </nav>
+
+    <!-- Body -->
+    <main class="col-span-12 md:col-span-9 space-y-12">
+
+      <section id="overview" class="anchor-target">
+        <h1 class="text-3xl font-extrabold tracking-tight text-slate-900">TrialSchema v1.0</h1>
+        <p class="mt-3 text-slate-700 leading-relaxed">
+          TrialSchema is an open, portable representation of clinical-trial eligibility designed for
+          <em>automated patient matching</em>. It captures the same information a clinician extracts when reading
+          a trial protocol — what to check, where to look, and how to evaluate — in a shape that an AI agent
+          can execute deterministically.
+        </p>
+        <p class="mt-3 text-slate-700 leading-relaxed">
+          The primary consumer is not a human reader. It is an AI agent, matching engine, or workflow system that
+          needs explicit trial logic, deterministic routing hints, and a stable wire format it can process end-to-end.
+        </p>
+
+        <div class="mt-5 p-4 rounded-xl border" style="background:var(--ts-ice);border-color:rgba(11,45,107,0.14)">
+          <div class="text-xs font-semibold uppercase tracking-wider" style="color:var(--ts-teal)">Source of truth</div>
+          <a href="docs/schemas/trialschema.v1.schema.json" class="block mt-1 font-mono text-sm underline" style="color:var(--ts-navy)">docs/schemas/trialschema.v1.schema.json</a>
+          <div class="mt-1 text-xs text-slate-600">JSON Schema 2020-12 · <code class="bg-white px-1.5 py-0.5 rounded">$id: https://trialschema.org/v1/export.schema.json</code></div>
+        </div>
+      </section>
+
+      <section id="design" class="anchor-target">
+        <h2 class="text-xl font-bold text-slate-900">2. Design principles</h2>
+        <ul class="mt-3 space-y-2 text-[14px] text-slate-700 list-disc pl-5">
+          <li><b>Agent-first.</b> The target runtime is an AI agent or matching system, so the format favors explicit execution semantics over narrative readability.</li>
+          <li><b>Domain-neutral.</b> Oncology, cardiology, metabolic, rare disease — the format makes no assumptions about specialty or treatment modality.</li>
+          <li><b>Standards-aligned, not standards-bound.</b> Codings follow FHIR shape (<code>system</code>+<code>code</code>+<code>display</code>); units use UCUM. But every place that accepts a code also accepts plain text — <b>end users never have to map criteria to ontologies by hand</b>.</li>
+          <li><b>Graceful degradation.</b> When a constraint cannot be machine-evaluated, the extractor emits <code>{"kind": "text", "description": …}</code>. The matcher always has the verbatim <code>source_text</code> as ultimate fallback.</li>
+          <li><b>Decoupled <em>what</em> from <em>where</em>.</b> A criterion's clinical concept (its <code>concept</code>) is independent of the document types the matcher should search (its <code>routing</code>).</li>
+          <li><b>Human-in-the-loop friendly.</b> Every criterion has an <code>enabled</code> toggle, a <code>rank</code>, an editable <code>clarified_text</code>, and free-text <code>guidance</code>.</li>
+          <li><b>Minimal surface.</b> Every field earns its place. Extension data goes in namespaced <code>extensions</code> bags.</li>
+        </ul>
+      </section>
+
+      <section id="envelope" class="anchor-target">
+        <h2 class="text-xl font-bold text-slate-900">3. Export envelope</h2>
+        <p class="mt-2 text-sm text-slate-600">The top-level document.</p>
+<pre class="mt-3 bg-white border border-slate-200 rounded-xl p-4 text-[12.5px] overflow-x-auto"><span class="b">{</span>
+  <span class="k">"format"</span>:         <span class="s">"trialschema"</span>,
+  <span class="k">"format_version"</span>: <span class="s">"1.0"</span>,
+  <span class="k">"generated_at"</span>:   <span class="s">"2026-05-21T12:00:00Z"</span>,
+  <span class="k">"generator"</span>:      <span class="b">{</span> <span class="k">"name"</span>: <span class="s">"trialschema-ui"</span>, <span class="k">"version"</span>: <span class="s">"1.0.0"</span> <span class="b">}</span>,
+  <span class="k">"trial_count"</span>:    <span class="n">1</span>,
+  <span class="k">"trials"</span>:         <span class="b">[</span> <span class="c">/* Trial objects */</span> <span class="b">]</span>
+<span class="b">}</span></pre>
+        <table class="field-table mt-4 w-full bg-white border border-slate-200 rounded-xl overflow-hidden">
+          <thead class="bg-slate-50 text-[11px] uppercase tracking-wider text-slate-500"><tr><th class="text-left">Field</th><th class="text-left">Type</th><th class="text-left">Notes</th></tr></thead>
+          <tbody class="text-slate-700">
+            <tr><td><code>format</code></td><td>const <code>"trialschema"</code></td><td>Magic string for sniffing.</td></tr>
+            <tr><td><code>format_version</code></td><td>string</td><td><code>MAJOR.MINOR</code>. Minor versions are additive.</td></tr>
+            <tr><td><code>generated_at</code></td><td>date-time</td><td>ISO-8601 timestamp.</td></tr>
+            <tr><td><code>generator</code></td><td>object</td><td>Name + version of the producing tool.</td></tr>
+            <tr><td><code>trials</code></td><td>Trial[]</td><td>Order is preserved.</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="primitives" class="anchor-target">
+        <h2 class="text-xl font-bold text-slate-900">4. Primitives</h2>
+
+        <h3 class="mt-4 font-semibold text-slate-800">Coding</h3>
+        <p class="text-sm text-slate-600">FHIR-shaped reference to a concept in a terminology. <b>Every field is optional</b>; <code>text</code> alone is a valid free-text fallback.</p>
+<pre class="mt-2 bg-white border border-slate-200 rounded-xl p-4 text-[12.5px] overflow-x-auto"><span class="b">{</span> <span class="k">"system"</span>: <span class="s">"http://loinc.org"</span>, <span class="k">"code"</span>: <span class="s">"2160-0"</span>, <span class="k">"display"</span>: <span class="s">"Creatinine"</span> <span class="b">}</span>
+<span class="b">{</span> <span class="k">"text"</span>: <span class="s">"ECOG performance status"</span> <span class="b">}</span>             <span class="c">// fallback when no code is known</span></pre>
+        <p class="mt-2 text-xs text-slate-600">Recommended systems: <code>http://loinc.org</code> (observations), <code>http://snomed.info/sct</code> (conditions/procedures), <code>http://www.nlm.nih.gov/research/umls/rxnorm</code> (medications), <code>http://hl7.org/fhir/sid/icd-10</code>, <code>http://www.genenames.org</code> (genes).</p>
+
+        <h3 class="mt-5 font-semibold text-slate-800">Quantity</h3>
+<pre class="mt-2 bg-white border border-slate-200 rounded-xl p-4 text-[12.5px] overflow-x-auto"><span class="b">{</span> <span class="k">"value"</span>: <span class="n">50</span>, <span class="k">"unit"</span>: <span class="s">"mL/min"</span>, <span class="k">"system"</span>: <span class="s">"http://unitsofmeasure.org"</span>, <span class="k">"code"</span>: <span class="s">"mL/min"</span> <span class="b">}</span></pre>
+        <p class="mt-2 text-xs text-slate-600">UCUM is recommended. <code>unit</code> is the human-readable label; <code>code</code> is the canonical UCUM code (e.g. <code>"a"</code> for years, <code>"mo"</code> for months, <code>"d"</code> for days).</p>
+
+        <h3 class="mt-5 font-semibold text-slate-800">PartialDate</h3>
+        <p class="text-sm text-slate-600">ISO-8601 date with optional precision: <code>"2024"</code>, <code>"2024-06"</code>, or <code>"2024-06-15"</code>. Empty string means unknown.</p>
+      </section>
+
+      <section id="trial" class="anchor-target">
+        <h2 class="text-xl font-bold text-slate-900">5. Trial</h2>
+<pre class="mt-3 bg-white border border-slate-200 rounded-xl p-4 text-[12.5px] overflow-x-auto"><span class="b">{</span>
+  <span class="k">"id"</span>:          <span class="s">"NCT04567890"</span>,
+  <span class="k">"kind"</span>:        <span class="s">"trial"</span>,
+  <span class="k">"enabled"</span>:     <span class="b">true</span>,
+  <span class="k">"title"</span>:       <span class="s">"PALOMA-3"</span>,
+  <span class="k">"identifiers"</span>: <span class="b">[</span><span class="b">{</span> <span class="k">"system"</span>: <span class="s">"https://clinicaltrials.gov"</span>, <span class="k">"value"</span>: <span class="s">"NCT04567890"</span> <span class="b">}</span><span class="b">]</span>,
+  <span class="k">"phase"</span>:       <span class="s">"phase-3"</span>,
+  <span class="k">"sponsor"</span>:     <span class="b">{</span> <span class="k">"name"</span>: <span class="s">"Pfizer"</span> <span class="b">}</span>,
+  <span class="k">"conditions"</span>:  <span class="b">[</span><span class="b">{</span> <span class="k">"system"</span>: <span class="s">"http://snomed.info/sct"</span>, <span class="k">"code"</span>: <span class="s">"254837009"</span>, <span class="k">"display"</span>: <span class="s">"Malignant neoplasm of breast"</span> <span class="b">}</span><span class="b">]</span>,
+  <span class="k">"interventions"</span>: <span class="b">[</span><span class="b">{</span> <span class="k">"type"</span>: <span class="s">"drug"</span>, <span class="k">"label"</span>: <span class="s">"palbociclib"</span>, <span class="k">"code"</span>: <span class="b">{</span> <span class="k">"system"</span>: <span class="s">"…/rxnorm"</span>, <span class="k">"code"</span>: <span class="s">"1601480"</span> <span class="b">}</span> <span class="b">}</span><span class="b">]</span>,
+  <span class="k">"enrollment"</span>:  <span class="b">{</span> <span class="k">"target"</span>: <span class="n">521</span> <span class="b">}</span>,
+  <span class="k">"lifecycle"</span>:   <span class="b">{</span>
+    <span class="k">"status"</span>:                  <span class="s">"recruiting"</span>,
+    <span class="k">"start_date"</span>:              <span class="s">"2013-10-07"</span>,
+    <span class="k">"primary_completion_date"</span>: <span class="s">"2017-09-01"</span>,
+    <span class="k">"completion_date"</span>:         <span class="s">""</span>
+  <span class="b">}</span>,
+  <span class="k">"care_path"</span>:   <span class="b">{</span> <span class="c">/* see §10 */</span> <span class="b">}</span>,
+  <span class="k">"criteria"</span>:    <span class="b">[</span> <span class="c">/* Criterion[] — array index === run order */</span> <span class="b">]</span>
+<span class="b">}</span></pre>
+
+        <table class="field-table mt-4 w-full bg-white border border-slate-200 rounded-xl overflow-hidden">
+          <thead class="bg-slate-50 text-[11px] uppercase tracking-wider text-slate-500"><tr><th class="text-left">Field</th><th class="text-left">Type</th><th class="text-left">Notes</th></tr></thead>
+          <tbody class="text-slate-700">
+            <tr><td><code>id</code></td><td>string</td><td>Stable primary key. NCT id recommended.</td></tr>
+            <tr><td><code>enabled</code></td><td>boolean</td><td>Matcher inclusion toggle, independent of recruitment status.</td></tr>
+            <tr><td><code>phase</code></td><td>enum</td><td><code>n-a · early-phase-1 · phase-1 · phase-1-2 · phase-2 · phase-2-3 · phase-3 · phase-4 · unknown</code></td></tr>
+            <tr><td><code>lifecycle.status</code></td><td>enum</td><td>FHIR ResearchStudy.status-aligned: <code>not-yet-recruiting · recruiting · active-not-recruiting · completed · suspended · terminated · withdrawn · unknown</code></td></tr>
+            <tr><td><code>conditions</code></td><td>Coding[]</td><td>SNOMED CT recommended; free-text fallback allowed.</td></tr>
+            <tr><td><code>interventions</code></td><td>Intervention[]</td><td><code>{ type, label, code? }</code>. <code>type ∈ drug · device · procedure · biological · behavioral · radiation · diagnostic-test · other</code>.</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="criterion" class="anchor-target">
+        <h2 class="text-xl font-bold text-slate-900">6. Criterion</h2>
+        <p class="mt-2 text-sm text-slate-600">A single eligibility rule. The shape decouples <em>what</em> the criterion is about (<code>concept</code>), <em>how</em> to evaluate it (<code>constraint</code>, <code>assertion</code>), and <em>where</em> to look (<code>routing</code>).</p>
+<pre class="mt-3 bg-white border border-slate-200 rounded-xl p-4 text-[12.5px] overflow-x-auto"><span class="b">{</span>
+  <span class="k">"id"</span>:             <span class="s">"INC-03"</span>,
+  <span class="k">"kind"</span>:           <span class="s">"inclusion"</span>,           <span class="c">// inclusion | exclusion</span>
+  <span class="k">"enabled"</span>:        <span class="b">true</span>,
+  <span class="k">"rank"</span>:           <span class="n">3</span>,                       <span class="c">// 1..N run order</span>
+  <span class="k">"cost_tier"</span>:      <span class="n">1</span>,                       <span class="c">// optional 1..5 hint</span>
+
+  <span class="k">"source_text"</span>:    <span class="s">"Creatinine clearance ≥ 50 mL/min within 14 days of screening"</span>,
+  <span class="k">"clarified_text"</span>: <span class="b">null</span>,                    <span class="c">// optional LLM rewrite</span>
+
+  <span class="k">"concept"</span>: <span class="b">{</span>
+    <span class="k">"domain"</span>: <span class="s">"observation"</span>,           <span class="c">// see Concept domains below</span>
+    <span class="k">"code"</span>:   <span class="b">{</span> <span class="k">"system"</span>: <span class="s">"http://loinc.org"</span>, <span class="k">"code"</span>: <span class="s">"2164-2"</span>, <span class="k">"display"</span>: <span class="s">"Creatinine clearance"</span> <span class="b">}</span>,
+    <span class="k">"text"</span>:   <span class="s">"Creatinine clearance"</span>
+  <span class="b">}</span>,
+
+  <span class="k">"assertion"</span>:  <span class="s">"present"</span>,                  <span class="c">// present | absent | unknown</span>
+  <span class="k">"constraint"</span>: <span class="b">{</span>
+    <span class="k">"kind"</span>:     <span class="s">"comparison"</span>,
+    <span class="k">"operator"</span>: <span class="s">">="</span>,
+    <span class="k">"quantity"</span>: <span class="b">{</span> <span class="k">"value"</span>: <span class="n">50</span>, <span class="k">"unit"</span>: <span class="s">"mL/min"</span>, <span class="k">"system"</span>: <span class="s">"http://unitsofmeasure.org"</span>, <span class="k">"code"</span>: <span class="s">"mL/min"</span> <span class="b">}</span>
+  <span class="b">}</span>,
+  <span class="k">"time_window"</span>: <span class="b">{</span> <span class="k">"anchor"</span>: <span class="s">"screening"</span>, <span class="k">"before"</span>: <span class="b">{</span> <span class="k">"value"</span>: <span class="n">14</span>, <span class="k">"unit"</span>: <span class="s">"day"</span>, <span class="k">"code"</span>: <span class="s">"d"</span> <span class="b">}</span>, <span class="k">"recency"</span>: <span class="s">"most-recent"</span> <span class="b">}</span>,
+
+  <span class="k">"routing"</span>:  <span class="b">{</span> <span class="k">"primary"</span>: <span class="b">[</span><span class="s">"core-lab"</span>, <span class="s">"intake-notes"</span>, <span class="s">"mdo-notes"</span><span class="b">]</span>, <span class="k">"fallback"</span>: <span class="b">[]</span> <span class="b">}</span>,
+  <span class="k">"guidance"</span>: <span class="s">""</span>,
+
+  <span class="k">"provenance"</span>: <span class="b">{</span> <span class="k">"extracted_at"</span>: <span class="s">"2026-05-21T12:00:00Z"</span>, <span class="k">"extracted_by"</span>: <span class="s">"openai/gpt-…"</span> <span class="b">}</span>
+<span class="b">}</span></pre>
+
+        <h3 class="mt-5 font-semibold text-slate-800">Concept domains</h3>
+        <p class="text-sm text-slate-600">High-level clinical category. Tells the matcher which kind of patient data to fetch.</p>
+        <div class="mt-2 grid grid-cols-2 gap-2 text-[12.5px]">
+          <div class="bg-white border border-slate-200 rounded-lg p-2"><code>demographics</code> <span class="text-slate-500">— age, sex, etc.</span></div>
+          <div class="bg-white border border-slate-200 rounded-lg p-2"><code>condition</code> <span class="text-slate-500">— diagnoses, problem list</span></div>
+          <div class="bg-white border border-slate-200 rounded-lg p-2"><code>observation</code> <span class="text-slate-500">— labs, vitals, scores</span></div>
+          <div class="bg-white border border-slate-200 rounded-lg p-2"><code>medication</code> <span class="text-slate-500">— drugs, prior therapy</span></div>
+          <div class="bg-white border border-slate-200 rounded-lg p-2"><code>procedure</code> <span class="text-slate-500">— surgery, intervention</span></div>
+          <div class="bg-white border border-slate-200 rounded-lg p-2"><code>adverse-event</code> <span class="text-slate-500">— toxicity history</span></div>
+          <div class="bg-white border border-slate-200 rounded-lg p-2"><code>genomic</code> <span class="text-slate-500">— mutations, biomarkers</span></div>
+          <div class="bg-white border border-slate-200 rounded-lg p-2"><code>consent</code> <span class="text-slate-500">— willingness, ICF</span></div>
+          <div class="bg-white border border-slate-200 rounded-lg p-2"><code>logistic</code> <span class="text-slate-500">— travel, language, etc.</span></div>
+          <div class="bg-white border border-slate-200 rounded-lg p-2"><code>other</code> <span class="text-slate-500">— anything else</span></div>
+        </div>
+
+        <h3 class="mt-5 font-semibold text-slate-800">Assertion</h3>
+        <p class="text-sm text-slate-600"><code>present</code> — the patient must satisfy the constraint. <code>absent</code> — the patient must NOT satisfy it (e.g. "no history of"). <code>unknown</code> — no assertion. Combining this with <code>kind: "exclusion"</code> + <code>assertion: "present"</code> reads naturally as "patient must NOT have …".</p>
+      </section>
+
+      <section id="constraint" class="anchor-target">
+        <h2 class="text-xl font-bold text-slate-900">7. Constraints (tagged union)</h2>
+        <p class="mt-2 text-sm text-slate-600">Every <code>constraint</code> is discriminated by <code>kind</code>. The <code>text</code> variant is the always-valid fallback.</p>
+
+        <div class="mt-3 space-y-3">
+          <div class="bg-white border border-slate-200 rounded-xl p-3">
+            <div class="text-[11px] uppercase tracking-wider font-bold text-blue-700">comparison</div>
+            <pre class="mt-1 text-[12px]"><span class="b">{</span> <span class="k">"kind"</span>: <span class="s">"comparison"</span>, <span class="k">"operator"</span>: <span class="s">">="</span>, <span class="k">"quantity"</span>: <span class="b">{</span> <span class="k">"value"</span>: <span class="n">18</span>, <span class="k">"unit"</span>: <span class="s">"years"</span>, <span class="k">"code"</span>: <span class="s">"a"</span> <span class="b">}</span> <span class="b">}</span></pre>
+            <div class="text-xs text-slate-500 mt-1">Operators: <code>&lt; · &lt;= · = · &gt;= · &gt; · !=</code></div>
+          </div>
+
+          <div class="bg-white border border-slate-200 rounded-xl p-3">
+            <div class="text-[11px] uppercase tracking-wider font-bold text-blue-700">range</div>
+            <pre class="mt-1 text-[12px]"><span class="b">{</span> <span class="k">"kind"</span>: <span class="s">"range"</span>, <span class="k">"low"</span>: <span class="b">{</span> <span class="k">"value"</span>: <span class="n">0</span> <span class="b">}</span>, <span class="k">"high"</span>: <span class="b">{</span> <span class="k">"value"</span>: <span class="n">2</span> <span class="b">}</span> <span class="b">}</span></pre>
+            <div class="text-xs text-slate-500 mt-1">Inclusive bounds. Either <code>low</code> or <code>high</code> may be omitted.</div>
+          </div>
+
+          <div class="bg-white border border-slate-200 rounded-xl p-3">
+            <div class="text-[11px] uppercase tracking-wider font-bold text-blue-700">code-set</div>
+            <pre class="mt-1 text-[12px]"><span class="b">{</span> <span class="k">"kind"</span>: <span class="s">"code-set"</span>, <span class="k">"match"</span>: <span class="s">"any"</span>,
+  <span class="k">"values"</span>: <span class="b">[</span> <span class="b">{</span> <span class="k">"system"</span>: <span class="s">"http://snomed.info/sct"</span>, <span class="k">"code"</span>: <span class="s">"254837009"</span> <span class="b">}</span> <span class="b">]</span> <span class="b">}</span></pre>
+            <div class="text-xs text-slate-500 mt-1"><code>match ∈ any · all · none</code>. Patient matches if their codes intersect / contain / disjoint <code>values</code>.</div>
+          </div>
+
+          <div class="bg-white border border-slate-200 rounded-xl p-3">
+            <div class="text-[11px] uppercase tracking-wider font-bold text-blue-700">boolean</div>
+            <pre class="mt-1 text-[12px]"><span class="b">{</span> <span class="k">"kind"</span>: <span class="s">"boolean"</span>, <span class="k">"value"</span>: <span class="b">true</span> <span class="b">}</span></pre>
+          </div>
+
+          <div class="bg-white border border-slate-200 rounded-xl p-3">
+            <div class="text-[11px] uppercase tracking-wider font-bold text-blue-700">exists</div>
+            <pre class="mt-1 text-[12px]"><span class="b">{</span> <span class="k">"kind"</span>: <span class="s">"exists"</span> <span class="b">}</span></pre>
+            <div class="text-xs text-slate-500 mt-1">Pure presence/absence. Combine with <code>assertion</code>.</div>
+          </div>
+
+          <div class="bg-white border border-slate-200 rounded-xl p-3">
+            <div class="text-[11px] uppercase tracking-wider font-bold text-amber-700">text · always-valid fallback</div>
+            <pre class="mt-1 text-[12px]"><span class="b">{</span> <span class="k">"kind"</span>: <span class="s">"text"</span>, <span class="k">"description"</span>: <span class="s">"ECOG performance status 0 or 1"</span> <span class="b">}</span></pre>
+            <div class="text-xs text-slate-500 mt-1">Use whenever the constraint cannot be safely structured. The matcher will defer to LLM judgement.</div>
+          </div>
+        </div>
+      </section>
+
+      <section id="routing" class="anchor-target">
+        <h2 class="text-xl font-bold text-slate-900">8. Routing</h2>
+        <p class="mt-2 text-sm text-slate-600">A pragmatic cost-optimization layer: which patient-record document types the matcher should search first (<code>primary</code>) before falling back (<code>fallback</code>). Empty arrays mean no preference.</p>
+
+        <div class="mt-3 overflow-x-auto">
+        <table class="field-table w-full bg-white border border-slate-200 rounded-xl overflow-hidden">
+          <thead class="bg-slate-50 text-[11px] uppercase tracking-wider text-slate-500"><tr><th class="text-left">Id</th><th class="text-left">Label</th><th class="text-left">Typical content</th></tr></thead>
+          <tbody class="text-slate-700">
+            <tr><td><code>intake-notes</code></td><td>Intake notes</td><td>Demographics, admin rules, general medical history.</td></tr>
+            <tr><td><code>referral-letters</code></td><td>Referral letters</td><td>External clinical history validation.</td></tr>
+            <tr><td><code>mdo-notes</code></td><td>Multidisciplinary / specialty board notes</td><td>MDT / MDO, tumor boards, heart team, transplant board.</td></tr>
+            <tr><td><code>pathology</code></td><td>Histology / pathology</td><td>Microscopic properties, tissue biomarkers, biopsies.</td></tr>
+            <tr><td><code>imaging</code></td><td>Imaging / functional testing</td><td>X-ray, CT, MRI, PET, US, plus EKG, EEG, echo, spirometry.</td></tr>
+            <tr><td><code>treatment-history</code></td><td>Treatment history</td><td>Prior systemic therapy, medication lines, washouts, surgery.</td></tr>
+            <tr><td><code>molecular-genomic</code></td><td>Advanced / genomic labs</td><td>Sequencing, molecular profiling, liquid biopsy.</td></tr>
+            <tr><td><code>core-lab</code></td><td>Core laboratory</td><td>CBC, LFTs, GFR, electrolytes, glucose, lipids.</td></tr>
+            <tr><td><code>other</code></td><td>Other / soft criterion</td><td>Consent, willingness, logistics — pair with <code>guidance</code>.</td></tr>
+          </tbody>
+        </table>
+        </div>
+        <p class="mt-2 text-xs text-slate-600">System URI for the controlled vocabulary: <code>https://trialschema.org/v1/document-types</code>.</p>
+      </section>
+
+      <section id="carepath" class="anchor-target">
+        <h2 class="text-xl font-bold text-slate-900">9. Care path <span class="pill" style="background:#EAF8FB;color:#0B2D6B">optional</span></h2>
+        <p class="mt-2 text-sm text-slate-700">A <em>care path</em> is the standard ordered sequence of clinical phases a patient with the trial's condition typically moves through (diagnosis → staging → treatment → follow-up). It is <strong>orthogonal to eligibility logic</strong>: it lets a matcher reason about <em>where in a treatment journey</em> a candidate sits, separately from whether they meet the criteria.</p>
+
+        <p class="mt-2 text-sm text-slate-700">The pattern is universal — oncology pathways, radiation-oncology protocols, heart-failure / diabetes management programmes, transplant pathways, stroke-care pathways — but most early-phase or single-encounter trials don't need one. <strong>Populate <code>care_path</code> only when the trial maps to a recognised standard pathway; otherwise omit it.</strong></p>
+
+        <p class="mt-2 text-sm text-slate-700"><b>FHIR alignment.</b> <code>CarePath</code> aligns with FHIR R5 <a href="https://hl7.org/fhir/plandefinition.html" class="underline" target="_blank" rel="noopener"><code>PlanDefinition</code></a> (a <em>template</em> of an ordered set of activities), not <code>CarePlan</code> (which is a patient-instantiated plan). Each <code>phase</code> aligns with a <code>PlanDefinition.action</code>.</p>
+
+<pre class="mt-3 bg-white border border-slate-200 rounded-xl p-4 text-[12.5px] overflow-x-auto"><span class="b">{</span>
+  <span class="k">"id"</span>:    <span class="s">"breast-cancer"</span>,
+  <span class="k">"label"</span>: <span class="s">"Breast cancer"</span>,
+  <span class="k">"concept"</span>: <span class="b">{</span> <span class="k">"system"</span>: <span class="s">"http://snomed.info/sct"</span>, <span class="k">"code"</span>: <span class="s">"254837009"</span> <span class="b">}</span>,
+  <span class="k">"phases"</span>: <span class="b">[</span>
+    <span class="b">{</span> <span class="k">"id"</span>: <span class="s">"phase-1"</span>, <span class="k">"label"</span>: <span class="s">"Diagnosis"</span>, <span class="k">"key_activities"</span>: <span class="b">[</span><span class="s">"Imaging"</span>, <span class="s">"Biopsy"</span><span class="b">]</span> <span class="b">}</span>,
+    <span class="b">{</span> <span class="k">"id"</span>: <span class="s">"phase-2"</span>, <span class="k">"label"</span>: <span class="s">"Neoadjuvant therapy"</span>, <span class="k">"key_activities"</span>: <span class="b">[</span><span class="s">"Chemotherapy"</span><span class="b">]</span> <span class="b">}</span>
+  <span class="b">]</span>
+<span class="b">}</span></pre>
+      </section>
+
+      <section id="example" class="anchor-target">
+        <h2 class="text-xl font-bold text-slate-900">10. Full example</h2>
+<pre class="mt-3 bg-white border border-slate-200 rounded-xl p-4 text-[12.5px] overflow-x-auto"><span class="b">{</span>
+  <span class="k">"format"</span>: <span class="s">"trialschema"</span>, <span class="k">"format_version"</span>: <span class="s">"1.0"</span>,
+  <span class="k">"generated_at"</span>: <span class="s">"2026-05-21T12:00:00Z"</span>,
+  <span class="k">"trials"</span>: <span class="b">[{</span>
+    <span class="k">"id"</span>: <span class="s">"NCT04567890"</span>, <span class="k">"kind"</span>: <span class="s">"trial"</span>, <span class="k">"enabled"</span>: <span class="b">true</span>, <span class="k">"title"</span>: <span class="s">"PALOMA-3"</span>,
+    <span class="k">"phase"</span>: <span class="s">"phase-3"</span>,
+    <span class="k">"conditions"</span>: <span class="b">[{</span> <span class="k">"system"</span>: <span class="s">"http://snomed.info/sct"</span>, <span class="k">"code"</span>: <span class="s">"254837009"</span>, <span class="k">"display"</span>: <span class="s">"Breast cancer"</span> <span class="b">}]</span>,
+    <span class="k">"lifecycle"</span>: <span class="b">{</span> <span class="k">"status"</span>: <span class="s">"recruiting"</span>, <span class="k">"start_date"</span>: <span class="s">"2013-10-07"</span> <span class="b">}</span>,
+    <span class="k">"criteria"</span>: <span class="b">[</span>
+      <span class="b">{</span>
+        <span class="k">"id"</span>: <span class="s">"INC-01"</span>, <span class="k">"kind"</span>: <span class="s">"inclusion"</span>, <span class="k">"enabled"</span>: <span class="b">true</span>, <span class="k">"rank"</span>: <span class="n">1</span>,
+        <span class="k">"source_text"</span>: <span class="s">"Age ≥ 18 years"</span>,
+        <span class="k">"concept"</span>: <span class="b">{</span> <span class="k">"domain"</span>: <span class="s">"demographics"</span>, <span class="k">"text"</span>: <span class="s">"Age"</span>, <span class="k">"code"</span>: <span class="b">{</span> <span class="k">"system"</span>: <span class="s">"http://loinc.org"</span>, <span class="k">"code"</span>: <span class="s">"30525-0"</span> <span class="b">}</span> <span class="b">}</span>,
+        <span class="k">"assertion"</span>: <span class="s">"present"</span>,
+        <span class="k">"constraint"</span>: <span class="b">{</span> <span class="k">"kind"</span>: <span class="s">"comparison"</span>, <span class="k">"operator"</span>: <span class="s">">="</span>, <span class="k">"quantity"</span>: <span class="b">{</span> <span class="k">"value"</span>: <span class="n">18</span>, <span class="k">"unit"</span>: <span class="s">"years"</span>, <span class="k">"code"</span>: <span class="s">"a"</span> <span class="b">}</span> <span class="b">}</span>,
+        <span class="k">"routing"</span>: <span class="b">{</span> <span class="k">"primary"</span>: <span class="b">[</span><span class="s">"intake-notes"</span><span class="b">]</span>, <span class="k">"fallback"</span>: <span class="b">[]</span> <span class="b">}</span>
+      <span class="b">}</span>,
+      <span class="b">{</span>
+        <span class="k">"id"</span>: <span class="s">"INC-02"</span>, <span class="k">"kind"</span>: <span class="s">"inclusion"</span>, <span class="k">"enabled"</span>: <span class="b">true</span>, <span class="k">"rank"</span>: <span class="n">2</span>,
+        <span class="k">"source_text"</span>: <span class="s">"HER2-negative tumor"</span>,
+        <span class="k">"concept"</span>: <span class="b">{</span> <span class="k">"domain"</span>: <span class="s">"genomic"</span>, <span class="k">"text"</span>: <span class="s">"HER2"</span>, <span class="k">"code"</span>: <span class="b">{</span> <span class="k">"system"</span>: <span class="s">"http://www.genenames.org"</span>, <span class="k">"code"</span>: <span class="s">"3430"</span>, <span class="k">"display"</span>: <span class="s">"ERBB2"</span> <span class="b">}</span> <span class="b">}</span>,
+        <span class="k">"assertion"</span>: <span class="s">"absent"</span>,
+        <span class="k">"constraint"</span>: <span class="b">{</span> <span class="k">"kind"</span>: <span class="s">"exists"</span> <span class="b">}</span>,
+        <span class="k">"routing"</span>: <span class="b">{</span> <span class="k">"primary"</span>: <span class="b">[</span><span class="s">"pathology"</span>, <span class="s">"molecular-genomic"</span><span class="b">]</span>, <span class="k">"fallback"</span>: <span class="b">[]</span> <span class="b">}</span>
+      <span class="b">}</span>
+    <span class="b">]</span>
+  <span class="b">}]</span>
+<span class="b">}</span></pre>
+      </section>
+
+      <section id="alignment" class="anchor-target">
+        <h2 class="text-xl font-bold text-slate-900">11. FHIR &amp; standards alignment</h2>
+        <p class="mt-2 text-sm text-slate-700">TrialSchema v1 is a deliberate <em>subset</em> of HL7 FHIR R5 <code>ResearchStudy</code> with eligibility-focused additions. Every Trial-level element maps cleanly:</p>
+
+        <div class="mt-3 overflow-x-auto">
+        <table class="field-table w-full bg-white border border-slate-200 rounded-xl overflow-hidden">
+          <thead class="bg-slate-50 text-[11px] uppercase tracking-wider text-slate-500"><tr><th class="text-left">TrialSchema v1</th><th class="text-left">FHIR R5</th><th class="text-left">Notes</th></tr></thead>
+          <tbody class="text-slate-700">
+            <tr><td><code>Trial</code></td><td><code>ResearchStudy</code></td><td>1:1 conceptually.</td></tr>
+            <tr><td><code>id</code> / <code>identifiers</code></td><td><code>ResearchStudy.identifier</code></td><td>Primary id is the NCT number when present.</td></tr>
+            <tr><td><code>title</code></td><td><code>ResearchStudy.title</code></td><td></td></tr>
+            <tr><td><code>phase</code></td><td><code>ResearchStudy.phase</code></td><td>Same vocabulary, kebab-cased.</td></tr>
+            <tr><td><code>sponsor</code></td><td><code>ResearchStudy.associatedParty[role=sponsor]</code></td><td></td></tr>
+            <tr><td><code>conditions</code></td><td><code>ResearchStudy.condition</code></td><td>Codings (SNOMED CT recommended).</td></tr>
+            <tr><td><code>interventions</code></td><td><code>ResearchStudy.focus</code></td><td>With <code>type</code> annotation.</td></tr>
+            <tr><td><code>enrollment.target</code></td><td><code>ResearchStudy.recruitment.targetNumber</code></td><td></td></tr>
+            <tr><td><code>lifecycle.status</code></td><td><code>ResearchStudy.status</code></td><td>Same value set.</td></tr>
+            <tr><td><code>lifecycle.start_date</code> / <code>completion_date</code></td><td><code>ResearchStudy.period</code></td><td>Date precision per <code>PartialDate</code>.</td></tr>
+            <tr><td><code>criteria[]</code></td><td><code>ResearchStudy.recruitment.eligibility</code></td><td>v1 inlines criteria instead of referencing a <code>Group</code>.</td></tr>
+            <tr><td><code>care_path</code></td><td><code>PlanDefinition</code></td><td>Optional. <code>care_path.phases[]</code> ↔ <code>PlanDefinition.action[]</code>. Use when the trial maps to a recognised clinical pathway.</td></tr>
+            <tr><td><code>Coding</code> / <code>Quantity</code> / <code>Identifier</code></td><td>FHIR <code>Coding</code> / <code>Quantity</code> / <code>Identifier</code></td><td>Field names and shape preserved.</td></tr>
+          </tbody>
+        </table>
+        </div>
+
+        <h3 class="mt-5 font-semibold text-slate-800">Other standards</h3>
+        <ul class="mt-2 space-y-2 text-[14px] text-slate-700 list-disc pl-5">
+          <li><b>UCUM</b> — recommended for all unit codes (<code>Quantity.code</code>).</li>
+          <li><b>SNOMED CT</b> — conditions, procedures (<code>http://snomed.info/sct</code>).</li>
+          <li><b>LOINC</b> — observations, lab tests (<code>http://loinc.org</code>).</li>
+          <li><b>RxNorm / ATC</b> — medications.</li>
+          <li><b>ICD-10 / ICD-11</b> — diagnoses.</li>
+          <li><b>HGNC</b> — genes / molecular biomarkers.</li>
+          <li><b>OMOP CDM</b> — <code>concept.domain</code> values (<code>condition</code>, <code>observation</code>, <code>medication</code>, <code>procedure</code>) align with OMOP domain ids.</li>
+          <li><b>HL7 CQL</b> — the <code>constraint</code> tagged union is shaped so a CQL transpiler can map each variant to <code>exists</code>, comparison, or interval expressions.</li>
+        </ul>
+      </section>
+
+      <section id="ingest" class="anchor-target">
+        <h2 class="text-xl font-bold text-slate-900">12. Ingesting ClinicalTrials.gov</h2>
+        <p class="mt-2 text-sm text-slate-700">The TrialSchema UI accepts the <a href="https://clinicaltrials.gov/data-api/api" class="underline" target="_blank" rel="noopener">CT.gov API v2</a> JSON shape directly. Drop a single study record, an array of studies, or a JSONL file of records into the upload box — the format is auto-detected.</p>
+
+        <p class="mt-3 text-sm text-slate-700 font-semibold">What happens automatically:</p>
+        <ul class="mt-1 space-y-1 text-[13.5px] text-slate-700 list-disc pl-5">
+          <li>NCT id, title, phase, sponsor, conditions, interventions, enrollment, lifecycle dates and status are pulled <em>deterministically</em> from <code>protocolSection</code> — no LLM round-trip.</li>
+          <li>The free-text <code>eligibilityModule.eligibilityCriteria</code> blob is parsed into structured Inclusion / Exclusion criteria by the LLM, with best-effort LOINC / SNOMED / RxNorm code hints attached to each criterion's <code>concept</code>.</li>
+          <li>Routing is set per criterion based on its concept domain.</li>
+        </ul>
+
+<pre class="mt-4 bg-white border border-slate-200 rounded-xl p-4 text-[12.5px] overflow-x-auto"><span class="c">// CT.gov v2 → TrialSchema v1 (deterministic field map)</span>
+protocolSection.identificationModule.nctId            <span class="c">→</span>  trial.id
+protocolSection.identificationModule.briefTitle       <span class="c">→</span>  trial.title
+protocolSection.designModule.phases[]                 <span class="c">→</span>  trial.phase           <span class="c">// PHASE3 → "phase-3"</span>
+protocolSection.sponsorCollaboratorsModule.leadSponsor.name
+                                                     <span class="c">→</span>  trial.sponsor.name
+protocolSection.conditionsModule.conditions[]         <span class="c">→</span>  trial.conditions[].text
+protocolSection.armsInterventionsModule.interventions <span class="c">→</span>  trial.interventions[]
+protocolSection.designModule.enrollmentInfo.count     <span class="c">→</span>  trial.enrollment.target
+protocolSection.statusModule.overallStatus            <span class="c">→</span>  trial.lifecycle.status
+protocolSection.statusModule.startDateStruct.date     <span class="c">→</span>  trial.lifecycle.start_date
+protocolSection.statusModule.primaryCompletionDateStruct.date
+                                                     <span class="c">→</span>  trial.lifecycle.primary_completion_date
+protocolSection.statusModule.completionDateStruct.date
+                                                     <span class="c">→</span>  trial.lifecycle.completion_date
+protocolSection.eligibilityModule.eligibilityCriteria <span class="c">→</span>  trial.criteria[]      <span class="c">// LLM-structured</span></pre>
+      </section>
+
+      <section id="versioning" class="anchor-target">
+        <h2 class="text-xl font-bold text-slate-900">13. Versioning</h2>
+        <p class="mt-2 text-sm text-slate-700">
+          <code>format_version</code> uses <code>MAJOR.MINOR</code>. Minor versions are strictly additive (new optional fields, new enum members marked as such). Major versions may make breaking changes; this is <code>1.0</code>, the inaugural release. There is no prior version to be compatible with.
+        </p>
+        <p class="mt-2 text-sm text-slate-700">
+          Implementers SHOULD reject documents with an unknown <code>format</code> value or with a <code>format_version</code> whose <code>MAJOR</code> they do not understand. They SHOULD ignore unknown fields within a known major version.
+        </p>
+      </section>
+
+    </main>
+  </div>
+
+  <footer class="max-w-5xl mx-auto px-6 py-8 text-center text-xs text-slate-500">
+    TrialSchema · open format · <a href="docs/schemas/trialschema.v1.schema.json" class="underline hover:text-slate-700">JSON Schema</a>
+  </footer>
+
+</body>
+</html>
