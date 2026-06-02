@@ -2,15 +2,17 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://trialschema.org/v1/export.schema.json",
   "title": "TrialSchema Export",
-  "description": "A portable, agent-friendly representation of clinical-trial eligibility designed for automated patient matching. Domain-neutral (oncology, cardiology, metabolic, rare disease, …) and standards-aligned: a deliberate subset of HL7 FHIR R5 ResearchStudy with eligibility-focused additions, FHIR-shaped Codings, and UCUM units. Free-text fallbacks remain valid everywhere so end users never have to hand-curate ontology codes.",
+  "description": "A portable, agent-friendly representation of clinical-trial eligibility designed for automated patient matching. Domain-neutral (oncology, cardiology, metabolic, rare disease, ...) and standards-aligned: a deliberate subset of HL7 FHIR R5 ResearchStudy with eligibility-focused additions, FHIR-shaped Codings, UCUM units, and an explicit user-defined document routing profile. Free-text fallbacks remain valid everywhere so end users never have to hand-curate ontology codes.",
   "type": "object",
-  "required": ["format", "format_version", "generated_at", "trials"],
+  "required": ["format", "format_version", "generated_at", "routing_profile", "trials"],
   "additionalProperties": false,
   "properties": {
     "format":          { "const": "trialschema" },
     "format_version":  { "type": "string", "pattern": "^1\\.\\d+$", "description": "Semantic version of the format. Minor versions are additive." },
     "generated_at":    { "type": "string", "format": "date-time" },
     "generator":       { "$ref": "#/$defs/Generator" },
+    "routing_profile": { "$ref": "#/$defs/RoutingProfile" },
+    "care_path_catalog": { "type": "array", "items": { "$ref": "#/$defs/CarePathCatalogEntry" }, "description": "Optional. The normalized care-path enum (clinical-domain buckets, e.g. breast_cancer, heart_failure) active when this export was generated. Trials reference these via care_path_ids. Persisted so manual assignments and aliases survive a re-import." },
     "trial_count":     { "type": "integer", "minimum": 0 },
     "trials":          { "type": "array", "items": { "$ref": "#/$defs/Trial" } },
     "extensions":      { "$ref": "#/$defs/Extensions" }
@@ -32,6 +34,33 @@
       "type": "object",
       "description": "Free-form namespaced extension bag. Implementers SHOULD prefix keys with their own reverse-DNS namespace, e.g. \"org.example.foo\".",
       "additionalProperties": true
+    },
+
+    "RoutingProfile": {
+      "type": "object",
+      "description": "The document universe and default patient-document visit order active when this export was generated. Criterion-level routing references these document type ids.",
+      "required": ["id", "document_type_system", "default_scan_set", "default_visit_order", "document_types"],
+      "additionalProperties": false,
+      "properties": {
+        "id":                   { "type": "string", "pattern": "^[a-z][a-z0-9-]*$", "description": "Stable profile id, e.g. default-clinical." },
+        "label":                { "type": "string" },
+        "document_type_system": { "type": "string", "format": "uri", "description": "Canonical URI for the document-type id namespace." },
+        "default_scan_set":     { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/DocumentType" }, "uniqueItems": true, "description": "Default maximum document set to scan for most criteria. Order follows default_visit_order. Criteria may override with primary/fallback routing when clinically necessary." },
+        "default_visit_order":  { "type": "array", "items": { "$ref": "#/$defs/DocumentType" }, "uniqueItems": true, "description": "General order in which an agent should visit patient documents when no criterion-specific priority overrides it." },
+        "document_types":       { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/RoutingDocumentType" } }
+      }
+    },
+
+    "RoutingDocumentType": {
+      "type": "object",
+      "description": "A document type available to the extractor and downstream matching agent. Keep this lean: order lives in routing_profile.default_visit_order, while criterion-level routing states where each rule should look.",
+      "required": ["id", "label"],
+      "additionalProperties": false,
+      "properties": {
+        "id":    { "$ref": "#/$defs/DocumentType" },
+        "label": { "type": "string", "description": "Human-readable document type name." },
+        "hint":  { "type": "string", "description": "Agent-facing guidance describing typical content and when to scan this document type." }
+      }
     },
 
     "Coding": {
@@ -151,8 +180,10 @@
         },
 
         "care_path": { "$ref": "#/$defs/CarePath" },
+        "care_path_ids": { "type": "array", "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_]*$" }, "uniqueItems": true, "description": "Optional. Ids of the normalized care paths (from care_path_catalog) this trial belongs to. A trial may map to several clinical-domain buckets. Persisted so manual assignments survive a re-import." },
         "criteria":  { "type": "array", "items": { "$ref": "#/$defs/Criterion" }, "description": "Ordered list. Array index === run order; the first criterion runs first.", "$comment": "FHIR R5: ResearchStudy.recruitment.eligibility (resolved). v1 represents each criterion inline rather than via a Group reference." },
 
+        "provenance": { "$ref": "#/$defs/TrialProvenance" },
         "extensions": { "$ref": "#/$defs/Extensions" }
       }
     },
@@ -190,6 +221,19 @@
           "$comment": "FHIR R5: PlanDefinition.action[] (each phase is a top-level action).",
           "items": { "$ref": "#/$defs/CarePathPhase" }
         }
+      }
+    },
+
+    "CarePathCatalogEntry": {
+      "type": "object",
+      "description": "A normalized care-path bucket in the export-level enum. Trials reference it by id via care_path_ids. Aliases capture cross-language / synonym spellings used for auto-assignment.",
+      "required": ["id", "label"],
+      "additionalProperties": false,
+      "properties": {
+        "id":      { "type": "string", "pattern": "^[a-z0-9][a-z0-9_]*$", "description": "Stable snake_case id, e.g. breast_cancer." },
+        "label":   { "type": "string", "description": "Human-readable label, e.g. \"Breast cancer\"." },
+        "aliases": { "type": "array", "items": { "type": "string" }, "description": "Lowercase synonyms/spellings across languages used for alias-based auto-assignment." },
+        "concept": { "$ref": "#/$defs/Coding", "description": "Optional disease-domain anchor (typically a SNOMED CT code)." }
       }
     },
 
@@ -331,7 +375,7 @@
 
     "Routing": {
       "type": "object",
-      "description": "Pragmatic cost-optimization layer above the schema: which patient-record document types the matcher should search first (`primary`) before falling back (`fallback`). Empty arrays mean no preference.",
+      "description": "Criterion-specific routing over the export's top-level routing_profile: which patient-record document types the matcher should search first (`primary`) before falling back (`fallback`). Empty arrays mean no criterion-specific preference; use routing_profile.default_scan_set first, ordered by routing_profile.default_visit_order.",
       "required": ["primary", "fallback"],
       "additionalProperties": false,
       "properties": {
@@ -342,18 +386,8 @@
 
     "DocumentType": {
       "type": "string",
-      "description": "Controlled vocabulary of document types the matcher recognises. System: https://trialschema.org/v1/document-types",
-      "enum": [
-        "intake-notes",
-        "referral-letters",
-        "mdo-notes",
-        "pathology",
-        "imaging",
-        "treatment-history",
-        "molecular-genomic",
-        "core-lab",
-        "other"
-      ]
+      "description": "Document type id declared in routing_profile.document_types[].id. Default ids use system https://trialschema.org/v1/document-types, but profiles may define additional ids.",
+      "pattern": "^[a-z][a-z0-9-]*$"
     },
 
     "Provenance": {
@@ -364,6 +398,19 @@
         "extracted_by":  { "type": "string", "description": "Identifier of the model / tool that produced this criterion, e.g. \"openai/gpt-4o-mini\" or \"manual\"." },
         "clarified_at":  { "type": "string", "format": "date-time" },
         "clarified_by":  { "type": "string" }
+      }
+    },
+
+    "TrialProvenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Trial-level edit provenance. Records whether the trial was structured by AI and/or hand-edited by a reviewer, so a resume/merge of a newer raw upload can preserve reviewed manual work instead of redoing it.",
+      "properties": {
+        "ai_processed":    { "type": "boolean", "description": "True if an AI model produced or updated this trial." },
+        "manually_edited": { "type": "boolean", "description": "True if a human reviewer edited this trial in the workspace." },
+        "ai_at":           { "type": "string", "format": "date-time", "description": "Timestamp of the most recent AI update." },
+        "ai_by":           { "type": "string", "description": "Identifier of the AI model / tool, e.g. \"openai/gpt-4o-mini\" or \"manual-paste\"." },
+        "edited_at":       { "type": "string", "format": "date-time", "description": "Timestamp of the most recent manual edit." }
       }
     }
 

@@ -294,14 +294,13 @@
            shows an icon + outcome, with a quieter "how" line underneath. -->
       <section class="brand-panel rounded-2xl border p-5 shadow-sm">
         <div class="flex items-center justify-between flex-wrap gap-2 mb-3">
-          <div>
-            <div class="inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-600 bg-white/80 border-slate-200 mb-2">Built for AI agents and automated matching</div>
-            <h1 class="text-lg font-bold text-slate-900 tracking-tight">Turn trial protocols into agent-ready matching logic.</h1>
-            <p class="text-xs text-slate-600">TrialSchema turns free-text eligibility into execution-ready JSON that AI agents, matching engines, and workflow systems can run deterministically.</p>
+          <div class="max-w-2xl">
+            <h1 class="text-lg font-bold text-slate-900 tracking-tight">Make your trial eligibility ready for automated matching.</h1>
+            <p class="mt-1 text-xs text-slate-600">TrialSchema structures your eligibility criteria so matching tools and AI agents can apply them consistently — you stay in control and review every change.</p>
           </div>
-          <a href="schema.html" class="inline-flex items-center gap-1.5 text-[11px] font-semibold text-slate-600 hover:text-slate-900 bg-white/70 border border-slate-200 rounded-lg px-2.5 py-1.5">
+          <a href="schema.html" class="inline-flex items-center gap-1.5 text-[11px] font-semibold text-slate-500 hover:text-slate-900 bg-white/70 border border-slate-200 rounded-lg px-2.5 py-1.5">
             <svg viewBox="0 0 24 24" class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 3v5h5M7 3h7l5 5v13H7z M9 13h6M9 17h4" stroke-linecap="round"/></svg>
-            Schema reference
+            How it works
           </a>
         </div>
         <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -311,10 +310,9 @@
               <span class="w-8 h-8 grid place-items-center rounded-lg" style="background:rgba(234,248,251,.95);color:var(--ts-navy)">
                 <svg viewBox="0 0 24 24" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l9 5-9 5-9-5 9-5z M3 13l9 5 9-5 M3 17l9 5 9-5" stroke-linejoin="round"/></svg>
               </span>
-              <span class="text-sm font-semibold text-slate-900">Higher match accuracy</span>
+              <span class="text-sm font-semibold text-slate-900">Fewer missed matches</span>
             </div>
-            <p class="mt-1.5 text-[12px] leading-snug text-slate-600">Every criterion is rewritten to be unambiguous and self-contained — no more guessing what "locally advanced" or "HER2-low" meant.</p>
-            <p class="mt-1.5 text-[10px] text-slate-400 italic">via per-criterion <strong>Clarify</strong> rewrites</p>
+            <p class="mt-1.5 text-[12px] leading-snug text-slate-600">Vague wording like "locally advanced" or "HER2-low" is clarified into clear, checkable criteria.</p>
           </div>
           <!-- Benefit 2 -->
           <div class="bg-white/85 backdrop-blur rounded-xl border border-slate-200 p-3.5">
@@ -322,10 +320,9 @@
               <span class="w-8 h-8 grid place-items-center rounded-lg" style="background:rgba(234,248,251,.95);color:var(--ts-teal)">
                 <svg viewBox="0 0 24 24" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 10c0 7-9 12-9 12s-9-5-9-12a9 9 0 0118 0z M12 13a3 3 0 100-6 3 3 0 000 6z" stroke-linejoin="round"/></svg>
               </span>
-              <span class="text-sm font-semibold text-slate-900">Look in the right place</span>
+              <span class="text-sm font-semibold text-slate-900">Points to the right records</span>
             </div>
-            <p class="mt-1.5 text-[12px] leading-snug text-slate-600">Each rule is pointed at the patient documents where the answer lives — pathology, labs, imaging, MDT notes — so your agent or matching system stops searching everywhere.</p>
-            <p class="mt-1.5 text-[10px] text-slate-400 italic">via the doc-routing chips per criterion</p>
+            <p class="mt-1.5 text-[12px] leading-snug text-slate-600">Each criterion notes where the answer lives — pathology, labs, imaging or MDT notes.</p>
           </div>
           <!-- Benefit 3 -->
           <div class="bg-white/85 backdrop-blur rounded-xl border border-slate-200 p-3.5">
@@ -333,12 +330,27 @@
               <span class="w-8 h-8 grid place-items-center rounded-lg" style="background:rgba(168,227,207,.28);color:#117f6c">
                 <svg viewBox="0 0 24 24" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M13 2L4 14h7l-1 8 9-12h-7l1-8z" stroke-linejoin="round"/></svg>
               </span>
-              <span class="text-sm font-semibold text-slate-900">Fail fast, save compute</span>
+              <span class="text-sm font-semibold text-slate-900">Simple checks first</span>
             </div>
-            <p class="mt-1.5 text-[12px] leading-snug text-slate-600">Cheap deterministic checks (age, lab values) run first; expensive LLM reasoning only fires for patients still in the funnel.</p>
-            <p class="mt-1.5 text-[10px] text-slate-400 italic">via easy→hard criterion ordering</p>
+            <p class="mt-1.5 text-[12px] leading-snug text-slate-600">Quick criteria like age and lab values are checked first, so obvious mismatches drop out early.</p>
           </div>
         </div>
+      </section>
+
+      <!-- Routing profile: editable before extraction and exported with v1 -->
+      <section id="routingProfileSection" class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
+        <div class="flex items-start justify-between gap-4 flex-wrap">
+          <div>
+            <h2 class="text-base font-bold text-slate-900">Document Types &amp; Agent Visit Order</h2>
+            <p class="text-xs text-slate-500">This profile defines the documents the extractor may route to, the matrix columns, and the agent visit order. The document types marked <span class="font-semibold text-emerald-700">default scan</span> are searched for most criteria &mdash; adjust the set to fit your data (e.g. include pathology).</p>
+          </div>
+          <div class="flex items-center gap-2">
+            <button id="addRoutingDocBtn" type="button" class="text-xs font-semibold rounded-lg bg-slate-900 text-white px-3 py-1.5 hover:bg-slate-700">+ Add document</button>
+            <button id="resetRoutingProfileBtn" type="button" class="text-xs font-semibold rounded-lg border border-slate-200 bg-white text-slate-700 px-3 py-1.5 hover:bg-slate-50">Reset default</button>
+          </div>
+        </div>
+        <div id="routingProfileStatus" class="mt-2 text-[11px] text-slate-500"></div>
+        <div id="routingProfileList" class="mt-3 space-y-2"></div>
       </section>
 
       <!-- Progress -->
@@ -349,12 +361,13 @@
         <div class="flex items-center justify-between gap-4">
           <div>
             <h2 class="text-base font-bold text-slate-900">Pipeline Progress</h2>
-            <p class="text-xs text-slate-500">Trial-by-trial extraction. Trials already in your existing export are reused as-is.</p>
+            <p class="text-xs text-slate-500">Trial-by-trial extraction. Resume from an export to merge it with a newer raw upload &mdash; trials you already reviewed keep their manual edits, only new trials are processed.</p>
           </div>
           <div class="flex items-center gap-2 text-xs">
             <span class="badge bg-slate-100 text-slate-700"><span id="statTotal">0</span> total</span>
             <span class="badge bg-emerald-50 text-emerald-700"><span id="statDone">0</span> done</span>
             <span class="badge bg-amber-50 text-amber-700"><span id="statSkip">0</span> reused</span>
+            <span class="badge bg-indigo-50 text-indigo-700"><span id="statEdited">0</span> edited</span>
             <span class="badge bg-rose-50 text-rose-700"><span id="statErr">0</span> errors</span>
           </div>
         </div>
@@ -378,7 +391,7 @@
         <div class="flex items-center justify-between gap-4 flex-wrap">
           <div>
             <h2 class="text-base font-bold text-slate-900">Care Paths</h2>
-            <p class="text-xs text-slate-500">Normalized clinical-domain enum used downstream for patient matching (e.g. <em>breast cancer</em>, <em>heart failure</em>, <em>type 2 diabetes</em>). Detected from a sample of your trials and editable across the full dataset.</p>
+            <p class="text-xs text-slate-500">Normalized clinical-domain enum used downstream for patient matching (e.g. <em>breast cancer</em>, <em>heart failure</em>, <em>type 2 diabetes</em>). Auto-detected from your upload, then refined by the extractor &mdash; a trial can belong to several care paths. Edits and assignments are saved with the export, so re-importing a previous export restores them.</p>
           </div>
           <div class="flex items-center gap-2">
             <button id="detectCarePathsBtn" class="inline-flex items-center gap-1.5 text-xs font-semibold rounded-lg bg-slate-900 text-white px-3 py-1.5 hover:bg-slate-700 disabled:opacity-50">
@@ -434,6 +447,7 @@
           </div>
           <div data-meta class="mt-0.5 text-[11px] text-slate-500 truncate"></div>
         </div>
+        <span data-prov class="shrink-0 flex items-center gap-1"></span>
         <span data-counts class="text-[11px] text-slate-500 hidden md:inline"></span>
         <svg viewBox="0 0 24 24" class="w-4 h-4 text-slate-400 transition-transform group-open:rotate-180" fill="none">
           <path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>

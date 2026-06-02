@@ -18,53 +18,170 @@
 
 /* =========================== 1. CONSTANTS & STATE =========================== */
 
-// Document hierarchy (Rule 1) — universal clinical document domains.
-// IDs are stable internal contract; labels/hints are user-facing and generalized
-// across all medical fields (oncology, cardiology, neurology, endocrinology, …).
-const DOC_HIERARCHY = [
-  { group: "intake_layer",     id: "intake_notes",      label: "Intake Notes",                       short: "Intake", hint: "Demographics, admin rules, general medical history" },
-  { group: "intake_layer",     id: "referral_letters",  label: "Referral Letters",                   short: "Refer",  hint: "External clinical history validation" },
-  { group: "decision_layer",   id: "mdo_notes",         label: "Multidisciplinary / Specialty Board Notes", short: "MDB",   hint: "MDT/MDO, tumor boards, surgical boards, consensus reviews, therapeutic strategy" },
-  { group: "diagnostic_core",  id: "pathology",         label: "Histology / Pathology",              short: "Path",   hint: "Microscopic properties, tissue biomarkers, cellular pathology, biopsies" },
-  { group: "diagnostic_core",  id: "imaging_radiology", label: "Imaging / Functional Testing",       short: "Imag",   hint: "Structural lesions, size tracking, radiology, MRI, CT, EKG/ECG, EEG, echo" },
-  { group: "diagnostic_core",  id: "treatment_history", label: "Treatment History",                  short: "Tx Hx",  hint: "Prior systemic therapy, prior medication lines, washouts, surgical interventions" },
-  { group: "eligibility_layer",id: "molecular_genomic", label: "Advanced / Genomic Labs",            short: "Mol",    hint: "Genetic sequencing, molecular profiling, liquid biopsy" },
-  { group: "eligibility_layer",id: "core_lab",          label: "Core Laboratory / Chemistries",      short: "Lab",    hint: "Standard blood/urine, metabolic panels, cell counts (HbA1c, creatinine, potassium…)" },
-  { group: "soft_layer",       id: "other",             label: "Other / Soft criterion",             short: "Other",  hint: "Consent, willingness, logistics, study-specific rules — pair with free-text guidance" },
-  { group: "fallback",         id: "unknown",           label: "Unknown",                            short: "?",      hint: "Only when document domain cannot be determined" },
-];
-// IDs included in the doc-routing matrix (every column except "unknown").
-const MATRIX_DOCS = DOC_HIERARCHY.filter(d => d.id !== "unknown");
-const DOC_BY_ID = Object.fromEntries(DOC_HIERARCHY.map(d => [d.id, d]));
+// Routing profile (Rule 1) - the user-editable document universe and general
+// visit order. The default mirrors the former hard-coded document hierarchy.
+const DEFAULT_ROUTING_PROFILE = {
+  id: "default_clinical",
+  label: "Default clinical document profile",
+  document_types: [
+    { group: "intake_layer",      id: "intake_notes",      label: "Intake Notes",                              short: "Intake", hint: "Demographics, admin rules, general medical history", concept_domain: "demographics" },
+    { group: "intake_layer",      id: "referral_letters",  label: "Referral Letters",                          short: "Refer",  hint: "External clinical history validation", concept_domain: "condition" },
+    { group: "decision_layer",    id: "mdt_notes",         label: "Multidisciplinary Team Notes",               short: "MDT",    hint: "Multidisciplinary team or specialty board decisions, consensus reviews, therapeutic strategy", concept_domain: "procedure" },
+    { group: "diagnostic_core",   id: "pathology",         label: "Histology / Pathology",                     short: "Path",   hint: "Microscopic properties, tissue biomarkers, cellular pathology, biopsies", concept_domain: "observation" },
+    { group: "diagnostic_core",   id: "imaging_radiology", label: "Imaging / Functional Testing",              short: "Imag",   hint: "Structural lesions, size tracking, radiology, MRI, CT, EKG/ECG, EEG, echo", concept_domain: "observation" },
+    { group: "diagnostic_core",   id: "treatment_history", label: "Treatment History",                         short: "Tx Hx",  hint: "Prior systemic therapy, prior medication lines, washouts, surgical interventions", concept_domain: "medication" },
+    { group: "eligibility_layer", id: "molecular_genomic", label: "Advanced / Genomic Labs",                   short: "Mol",    hint: "Genetic sequencing, molecular profiling, liquid biopsy", concept_domain: "genomic" },
+    { group: "eligibility_layer", id: "core_lab",          label: "Core Laboratory / Chemistries",             short: "Lab",    hint: "Standard blood/urine, metabolic panels, cell counts (HbA1c, creatinine, potassium...)", concept_domain: "observation" },
+    { group: "soft_layer",        id: "other",             label: "Other / Soft criterion",                    short: "Other",  hint: "Consent, willingness, logistics, study-specific rules - pair with free-text guidance", concept_domain: "other" },
+  ],
+  // User-definable default scan set: the document ids most criteria should
+  // search by default. Editable in the UI and persisted with the profile.
+  default_scan_set: ["intake_notes", "referral_letters", "mdt_notes"],
+};
+const ROUTING_PROFILE_STORAGE = "trialschema.routing.profile.v1";
 
-// Canonical set of criterion-category ids accepted from the LLM. Anything
-// outside this set is normalised to "other" (the only case where free-text
-// guidance is offered to the user). "unknown" is excluded — it's a doc-routing
-// fallback, not a meaningful criterion category.
-const KNOWN_CATEGORIES = new Set(
-  DOC_HIERARCHY.filter(d => d.id !== "unknown").map(d => d.id)
-);
+function cloneRoutingProfile(profile = DEFAULT_ROUTING_PROFILE) {
+  return JSON.parse(JSON.stringify(profile));
+}
+
+function normalizeDocId(id) {
+  const normalized = String(id || "")
+    .trim()
+    .toLowerCase()
+    .replace(/-/g, "_")
+    .replace(/[^a-z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .replace(/_{2,}/g, "_")
+    .slice(0, 48) || "document";
+  return normalized;
+}
+
+function deriveDocShort(label, id = "") {
+  const words = String(label || "").trim().split(/\s+/).filter(Boolean);
+  const acronym = words.map(w => w[0]).join("").slice(0, 6);
+  return acronym || String(id || "").slice(0, 6) || "doc";
+}
+
+function normalizeRoutingProfile(profile) {
+  const base = cloneRoutingProfile(DEFAULT_ROUTING_PROFILE);
+  const src = profile && typeof profile === "object" ? profile : base;
+  const out = {
+    id: normalizeDocId(src.id || base.id),
+    label: String(src.label || base.label),
+    document_types: [],
+  };
+  const seen = new Set();
+  const list = Array.isArray(src.document_types) ? src.document_types : base.document_types;
+  list.forEach((d, i) => {
+    if (!d || typeof d !== "object") return;
+    let id = normalizeDocId(d.id);
+    if (!id) id = `document_${i + 1}`;
+    if (seen.has(id)) {
+      let n = 2, candidate = `${id}_${n}`;
+      while (seen.has(candidate)) candidate = `${id}_${++n}`;
+      id = candidate;
+    }
+    seen.add(id);
+    const label = String(d.label || id.replace(/_/g, " "));
+    const def = base.document_types.find(x => normalizeDocId(x.id) === id);
+    out.document_types.push({
+      id,
+      label,
+      short: String(d.short || def?.short || deriveDocShort(label, id)),
+      group: String(d.group || def?.group || "custom"),
+      hint: String(d.hint !== undefined ? d.hint : (def?.hint || "")),
+      concept_domain: normalizeConceptDomain(d.concept_domain || def?.concept_domain),
+    });
+  });
+  if (!out.document_types.some(d => d.id === "other")) {
+    out.document_types.push(cloneRoutingProfile(DEFAULT_ROUTING_PROFILE).document_types.find(d => d.id === "other"));
+  }
+  const validIds = new Set(out.document_types.map(d => d.id));
+  const requested = Array.isArray(src.default_scan_set) ? src.default_scan_set : base.default_scan_set;
+  const scan = [];
+  requested.forEach(id => {
+    const k = normalizeDocId(id);
+    if (validIds.has(k) && !scan.includes(k)) scan.push(k);
+  });
+  // Fall back to the first 3 (non-"other") document types if nothing valid was set.
+  if (!scan.length) {
+    out.document_types.filter(d => d.id !== "other").slice(0, 3).forEach(d => scan.push(d.id));
+  }
+  out.default_scan_set = scan;
+  return out;
+}
+
+function normalizeConceptDomain(v) {
+  const allowed = new Set(["demographics", "condition", "observation", "medication", "procedure", "adverse-event", "genomic", "consent", "logistic", "other"]);
+  const s = String(v || "").trim().toLowerCase();
+  return allowed.has(s) ? s : "other";
+}
+
+function matrixDocs() {
+  return (state.routingProfile?.document_types || []).filter(d => d && d.id);
+}
+
+function docById(id) {
+  const k = normalizeDocId(id);
+  return matrixDocs().find(d => d.id === k) || null;
+}
+
+function currentDocIds() {
+  return matrixDocs().map(d => d.id);
+}
+
+function defaultScanDocIds() {
+  const set = state.routingProfile?.default_scan_set;
+  const valid = new Set(currentDocIds());
+  const ids = (Array.isArray(set) ? set : []).filter(id => valid.has(id));
+  if (ids.length) return ids;
+  // Fallback: first 3 non-"other" document types in visit order.
+  return currentDocIds().filter(id => id !== "other").slice(0, 3);
+}
+
+function isDefaultScanDocId(id) {
+  return defaultScanDocIds().includes(normalizeDocId(id));
+}
+
+function toggleDefaultScanDocId(id) {
+  const k = normalizeDocId(id);
+  if (!isKnownDocId(k)) return;
+  const profile = state.routingProfile;
+  const set = Array.isArray(profile.default_scan_set) ? profile.default_scan_set.slice() : [];
+  const idx = set.indexOf(k);
+  if (idx >= 0) set.splice(idx, 1);
+  else set.push(k);
+  // Keep the scan set ordered by the document visit order.
+  const order = currentDocIds();
+  profile.default_scan_set = order.filter(d => set.includes(d));
+}
+
+function isKnownDocId(id) {
+  return !!docById(id);
+}
+
+function coerceDocIdToProfile(id) {
+  const k = normalizeDocId(id);
+  return isKnownDocId(k) ? k : "";
+}
 
 // Default candidate filenames inside /ingestion/. Static apps can't list a
 // directory, so we probe a manifest file first, then a sensible default list.
 // (Folder scanning is disabled by default; templates + manual upload only.)
 
-// Default "three main" primary documents that should be checked on every
-// criterion. Two are constant (intake + multi-disciplinary review); the third
-// is inferred from the criterion's clinical category. Anything else routed by
-// the LLM moves to fallback_docs (optional secondary checks).
-const DEFAULT_PRIMARY_BASE = ["intake_notes", "mdo_notes"];
-
-function inferThirdPrimary(criterion) {
+function inferBestProfileDoc(criterion) {
   const blob = `${criterion.category||""} ${criterion.original_text||""} ${criterion.structured_target?.metric||""}`.toLowerCase();
-  if (/molecul|gene|mutation|biomark|genom|liquid biops|ctdna|sequenc/.test(blob))     return "molecular_genomic";
-  if (/lab|blood|urine|chem|wbc|platelet|neutrophil|hb |hemoglob|gfr|creatin|alt|ast|bilirub|pth|sodium|potassium|electrolyte|hba1c|glucose|cholesterol|metabolic|panel/.test(blob)) return "core_lab";
-  if (/imag|mri|ct|pet|scan|lesion|tumor size|radiograph|sonograph|ultrasound|echo|ekg|ecg|eeg|x-ray|xray|angiogra|spirometr/.test(blob)) return "imaging_radiology";
-  if (/patholog|histolog|tissue|biopsy|specimen|grade|cytolog/.test(blob))             return "pathology";
-  if (/prior|previous|treatment|therap|surger|washout|chemo|radiation|line of|medication|prior med/.test(blob)) return "treatment_history";
-  // Demographics / consent / general -> already covered by intake_notes; pick
-  // referral_letters as a third sensible default.
-  return "referral_letters";
+  const candidates = [
+    [/molecul|gene|mutation|biomark|genom|liquid biops|ctdna|sequenc/, "molecular_genomic"],
+    [/lab|blood|urine|chem|wbc|platelet|neutrophil|hb |hemoglob|gfr|creatin|alt|ast|bilirub|pth|sodium|potassium|electrolyte|hba1c|glucose|cholesterol|metabolic|panel/, "core_lab"],
+    [/imag|mri|ct|pet|scan|lesion|tumor size|radiograph|sonograph|ultrasound|echo|ekg|ecg|eeg|x-ray|xray|angiogra|spirometr/, "imaging_radiology"],
+    [/patholog|histolog|tissue|biopsy|specimen|grade|cytolog/, "pathology"],
+    [/prior|previous|treatment|therap|surger|washout|chemo|radiation|line of|medication|prior med/, "treatment_history"],
+  ];
+  for (const [rx, id] of candidates) {
+    if (rx.test(blob) && isKnownDocId(id)) return id;
+  }
+  return currentDocIds().find(id => id !== "other") || "other";
 }
 
 // Recruitment status normalization targets (Rule 4).
@@ -92,6 +209,8 @@ const state = {
   running: false,
   abort: false,
   carePaths: [],        // normalized clinical-domain enum [{id, label, aliases[]}]
+  routingProfile: cloneRoutingProfile(DEFAULT_ROUTING_PROFILE),
+  selectedRoutingDocId: "",
 };
 
 
@@ -257,15 +376,12 @@ function bindManualUploads() {
     try {
       const txt = await f.text();
       const parsed = JSON.parse(txt);
-      // Accept both the canonical TrialSchema v1 wire format and bare arrays
-      // / earlier internal-shape exports (developer drops). v1 envelopes are
-      // converted back to the internal model so the matcher / UI keep working.
-      let trials;
-      if (parsed && parsed.format === TS_V1.FORMAT) {
-        trials = fromV1Envelope(parsed).trials;
-      } else {
-        trials = Array.isArray(parsed) ? parsed : (parsed.trials || []);
+      // Resume from a canonical TrialSchema v1 export. The envelope is converted
+      // back to the internal model so the matcher / UI keep working.
+      if (!parsed || parsed.format !== TS_V1.FORMAT) {
+        throw new Error(`Not a TrialSchema ${TS_V1.VERSION} export.`);
       }
+      const trials = fromV1Envelope(parsed).trials;
       state.existingExport = { trials };
       state.existingById = {};
       for (const t of trials) {
@@ -598,39 +714,56 @@ function classifyRows(rawRows) {
 
 /* ============================ 6. OPENAI REQUEST ============================ */
 
-const SYSTEM_PROMPT = `You are TrialSchema-Extractor, a clinical-trial structuring engine.
-You receive ONE raw clinical trial row — from ANY field of medicine (oncology,
-cardiology, neurology, endocrinology, infectious disease, rare disease, …) —
+function routingProfilePromptBlock() {
+  const docs = matrixDocs();
+  const defaultScan = new Set(defaultScanDocIds());
+  const guidance = docs.map((d, i) =>
+    `  ${i + 1}. "${d.id}"${defaultScan.has(d.id) ? " [default-scan]" : ""} - ${d.label}: ${d.hint || "No additional hint."}`
+  ).join("\n");
+  return [
+    `Routing profile: ${state.routingProfile.id} - ${state.routingProfile.label}`,
+    "Use ONLY these document IDs, shown in the user's general visit order:",
+    guidance,
+    `Default scan set for most criteria: ${defaultScanDocIds().map(id => `"${id}"`).join(", ")}`,
+  ].join("\n");
+}
+
+// Care-path enum context for the per-trial extractor. Empty string when no enum
+// has been detected yet (the panel auto-fills before/while processing).
+function carePathPromptBlock() {
+  if (!state.carePaths.length) return "";
+  const lines = state.carePaths.map(cp => {
+    const aliases = (cp.aliases || []).slice(0, 12).join(", ");
+    return `  - "${cp.id}" (${cp.label})${aliases ? ` — aliases: ${aliases}` : ""}`;
+  }).join("\n");
+  return [
+    "Active normalized CARE PATH enum (clinical-domain buckets for downstream patient matching):",
+    lines,
+  ].join("\n");
+}
+
+function buildSystemPrompt() {
+  const docIds = currentDocIds();
+  const scanIds = defaultScanDocIds();
+  const categoryList = docIds.map(id => `"${id}"`).join(", ");
+  const categoryShape = docIds.join(" | ");
+  return `You are TrialSchema-Extractor, a clinical-trial structuring engine.
+You receive ONE raw clinical trial row from ANY field of medicine (oncology,
+cardiology, neurology, endocrinology, infectious disease, rare disease, etc.)
 and return a SINGLE JSON object that strictly matches the TrialSchema execution
 model. You must obey ALL of the following rules:
 
-RULE 1 — CATEGORY-SPECIFIC DOCUMENT ROUTING (universal medical domains).
+RULE 1 - CATEGORY-SPECIFIC DOCUMENT ROUTING.
 Map each criterion to clinically appropriate document domains. Never produce blind
-checklists. Use only these document IDs from the hierarchy:
-  intake_layer:       "intake_notes", "referral_letters"
-  decision_layer:     "mdo_notes"           (multidisciplinary / specialty board notes)
-  diagnostic_core:    "pathology", "imaging_radiology", "treatment_history"
-  eligibility_layer:  "molecular_genomic", "core_lab"
-  fallback:           "unknown"
-Routing guidance (apply across ALL medical fields):
-  - intake_notes        → administrative rules, demographics (age, sex/gender), general medical history.
-  - referral_letters    → external clinical history validation from another provider.
-  - mdo_notes           → high-level multidisciplinary team decisions, consensus reviews, overall therapeutic strategy
-                          (MDO / MDT, tumor boards, surgical boards, heart team, transplant board, neuro board, …).
-  - pathology           → microscopic properties, tissue biomarkers, cellular pathology, biopsies, histology, cytology.
-  - imaging_radiology   → structural lesions, size tracking, radiology (X-ray, CT, MRI, PET, US) AND functional testing
-                          (EKG/ECG, EEG, echocardiography, spirometry, angiography). Despite the "radiology" id,
-                          this domain covers any imaging or functional diagnostic modality.
-  - treatment_history   → historical systemic therapies, prior medication lines, washouts, surgical interventions.
-  - molecular_genomic   → genetic sequencing, molecular profiling, liquid biopsy, gene mutations.
-  - core_lab            → standard blood/urine, metabolic panels, cell counts (HbA1c, creatinine, potassium,
-                          LFTs, GFR, lipids, INR, glucose, electrolytes, …).
-  - unknown             → fallback ONLY when document domain cannot be determined.
-Populate routing.primary_docs with at least 3 best-fit IDs (these are the
-required-checked routes) and routing.fallback_docs with 0-3 optional secondaries.
-A lab criterion must NEVER route to imaging_radiology, and vice versa.
+checklists. The end user has configured the active document universe and default
+agent visit order below:
+${routingProfilePromptBlock()}
+Populate routing.primary_docs with at most ${Math.max(scanIds.length, 1)} best-fit document IDs. For most criteria,
+use the default scan set exactly. Replace one of those defaults only when the criterion
+clearly needs a more specific configured document type. Populate routing.fallback_docs
+only for optional secondary routes. Do not use document IDs outside the active profile.
 
-RULE 2 — CRITERIA EXPLICIT ENRICHMENT (DOWNSTREAM AI OPTIMIZATION).
+RULE 2 - CRITERIA EXPLICIT ENRICHMENT (DOWNSTREAM AI OPTIMIZATION).
 For any criterion containing a numeric/quantitative comparison (e.g. "HbA1c >= 7.0 %",
 "LVEF < 40 %", "intact-PTH <= 240 pg/mL", "age > 15 years", "GFR >= 50 ml/min",
 "WBC >= 3.0", "ECOG 0-2", "systolic BP >= 140 mmHg"), set:
@@ -639,14 +772,14 @@ For any criterion containing a numeric/quantitative comparison (e.g. "HbA1c >= 7
 where:
   - metric: the exact parameter name as written (e.g. "HbA1c", "LVEF", "intact-PTH", "age", "GFR", "ECOG").
   - standard_code: BEST-EFFORT ontology code, prefixed by terminology, e.g.
-                     LOINC:4548-4   (HbA1c), LOINC:2160-0 (creatinine), LOINC:2164-2 (creatinine clearance),
-                     LOINC:30525-0  (age),   LOINC:8480-6  (systolic BP), LOINC:33747-0 (Karnofsky),
+                     LOINC:4548-4 (HbA1c), LOINC:2160-0 (creatinine), LOINC:2164-2 (creatinine clearance),
+                     LOINC:30525-0 (age), LOINC:8480-6 (systolic BP), LOINC:33747-0 (Karnofsky),
                      SNOMED:271649006 (systolic BP), SNOMED:254837009 (breast cancer),
                      RXNORM:1601480 (palbociclib), HGNC:3430 (ERBB2/HER2),
                      ICD10:C50.9 (breast cancer NOS).
                    Set "" when not confident. End users do NOT verify these codes by hand;
                    the downstream matcher treats them as hints, not contracts.
-  - operator: one of  "<", "<=", ">", ">=", "=", "!=", "between".
+  - operator: one of "<", "<=", ">", ">=", "=", "!=", "between".
   - value: numeric. For "between" use the lower bound and add upper_value.
   - unit: explicit unit string aligned to UCUM where possible (e.g. "%", "pg/mL",
                    "years", "mL/min", "mmHg", "mg/dL"). Use "" when unitless.
@@ -656,45 +789,47 @@ OMIT structured_target (or set it to null).
 The downstream matching agent must be able to execute mathematical evaluation
 WITHOUT re-reading the original_text.
 
-RULE 3 — CROSS-LINGUAL TRANSLATION & STANDARDIZATION.
+RULE 3 - CROSS-LINGUAL TRANSLATION & STANDARDIZATION.
 If the input is Dutch (e.g. "Tumorgroep: Borstkanker", "Indicatie: Gemetastaseerd",
 "Status: Werving") or any other non-English language, interpret it natively but translate
 ALL output strings (criteria text, diseases, phase, status, descriptions) cleanly into
 English. Preserve clinical precision.
 
-RULE 4 — OPERATIONAL STATUS & ISO DATE NORMALIZATION.
+RULE 4 - OPERATIONAL STATUS & ISO DATE NORMALIZATION.
 metadata.recruitment_status MUST be exactly one of:
   "Not yet recruiting", "Recruiting", "Active, not recruiting", "Completed".
 All lifecycle dates must be "YYYY-MM-DD" strings (or "" if unknown).
 
-RULE 5 — CRITERION CATEGORY (CLOSED VOCABULARY).
+RULE 5 - CRITERION CATEGORY (CLOSED VOCABULARY).
 The "category" field on every criterion MUST be exactly ONE of these lower-case tokens:
-  "intake_notes", "referral_letters", "mdo_notes", "pathology",
-  "imaging_radiology", "treatment_history", "molecular_genomic",
-  "core_lab", "other"
+  ${categoryList}
 Pick the SAME id as the criterion's primary document domain. Use "other" ONLY when the
-criterion truly does not fit any domain (e.g. consent, willingness, contraception
-requirements, study-logistics rules). Demographics (age, gender, weight, BMI),
-ICD-10 diagnoses, and admin rules ALWAYS go in "intake_notes" — never "other".
-Standard chemistries (CBC, LFTs, GFR, electrolytes) ALWAYS go in "core_lab".
+criterion truly does not fit any configured document type (e.g. consent, willingness,
+contraception requirements, study-logistics rules), or when the active profile label/hint
+for "other" says that is appropriate.
 
-RULE 6 — DAG FUNNEL PRIORITY (CHEAPEST → MOST COMPLEX).
+RULE 6 - DAG FUNNEL PRIORITY (CHEAPEST TO MOST COMPLEX).
 Set "priority_level" so the downstream pipeline can short-circuit on the cheapest
-deterministic checks first. Use this funnel order:
-  1 — Structured EHR knock-outs (NO LLM needed downstream): demographics, gender,
-        ICD-10 diagnosis flags, structured lab values. Categories: "intake_notes",
-        "core_lab", "referral_letters".
-  2 — High-yield unstructured tier (single-doc LLM extraction): biomarkers,
-        staging, histology, molecular profile, organ-specific imaging findings.
-        Categories: "pathology", "molecular_genomic", "imaging_radiology".
-  3 — Complex timeline / cross-document tier: prior therapies, washout windows,
-        line-of-therapy ordering, multidisciplinary decisions. Categories:
-        "treatment_history", "mdo_notes".
-  4 — "other" / soft criteria (consent, willingness, logistics).
-  5 — Reserved for unranked or trivially redundant items.
-The numeric priority MUST equal the tier number above; do not invent values.
+deterministic checks first. Use this funnel:
+  1 - Structured EHR knock-outs: demographics, gender, diagnosis flags, structured lab values.
+  2 - High-yield unstructured tier: biomarkers, staging, histology, molecular profile, organ-specific imaging.
+  3 - Complex timeline / cross-document tier: prior therapies, washout windows, line-of-therapy ordering, board decisions.
+  4 - "other" / soft criteria: consent, willingness, logistics.
+  5 - Reserved for unranked or trivially redundant items.
+Use the active routing profile's general visit order as a tie-breaker inside each tier.
 
-OUTPUT SHAPE — return EXACTLY this JSON structure (no extra keys, no commentary):
+RULE 7 - NORMALIZED CARE PATHS (CLINICAL-DOMAIN BUCKETS).
+A trial may belong to ONE OR MORE normalized care paths (clinical-domain buckets used
+downstream for patient matching, e.g. breast_cancer, heart_failure, type_2_diabetes).
+${state.carePaths.length
+  ? `Choose care_path_ids ONLY from the active enum below, using the snake_case ids exactly as shown.
+Match across languages and synonyms (Dutch "borst"/"mamma" -> breast_cancer, "hartfalen" -> heart_failure).
+Return ALL that genuinely apply (most trials map to exactly one; combination / multi-domain trials may
+list several). Return [] when none of the enum entries fit.
+${carePathPromptBlock()}`
+  : `No care-path enum is configured yet, so return care_path_ids as an empty array [].`}
+
+OUTPUT SHAPE - return EXACTLY this JSON structure (no extra keys, no commentary):
 {
   "trial_id": "string",
   "metadata": {
@@ -710,6 +845,7 @@ OUTPUT SHAPE — return EXACTLY this JSON structure (no extra keys, no commentar
       "actual_close_date": "YYYY-MM-DD"
     }
   },
+  "care_path_ids": [],
   "care_path": {
     "phases": [
       { "phase_name": "string", "description": "string", "duration": "string", "key_activities": ["string"] }
@@ -720,14 +856,14 @@ OUTPUT SHAPE — return EXACTLY this JSON structure (no extra keys, no commentar
       "criterion_id": "INC-01",
       "type": "inclusion",
       "original_text": "string",
-      "category": "intake_notes | referral_letters | mdo_notes | pathology | imaging_radiology | treatment_history | molecular_genomic | core_lab | other",
+      "category": "${categoryShape}",
       "priority_level": 1,
       "status": "active",
-      "routing": { "primary_docs": ["intake_notes"], "fallback_docs": [] },
+      "routing": { "primary_docs": ${JSON.stringify(scanIds.length ? scanIds : [docIds[0] || "other"])}, "fallback_docs": [] },
       "evaluation_type": "boolean",
       "structured_target": {
         "metric": "string (e.g., HbA1c or age)",
-        "standard_code": "string (Optional: LOINC, SNOMED-CT, or ICD-10 code; \"\" if unsure)",
+        "standard_code": "string (Optional: LOINC, SNOMED-CT, or ICD-10 code; empty string if unsure)",
         "operator": "string (one of <, <=, >, >=, =, !=, between)",
         "value": 0,
         "unit": "string (e.g., % or years)"
@@ -743,7 +879,10 @@ care_path is OPTIONAL. Emit it ONLY when the trial implies a recognised standard
 diabetes pathways, transplant pathways). When you do emit one, populate at least one phase. When the
 trial does not map to a clear pathway (early-phase healthy-volunteer studies, single-encounter
 device studies, etc.), set care_path to null and move on.
-Return ONLY the JSON object — no markdown fences, no explanations.`;
+care_path_ids is the normalized clinical-domain bucket assignment (Rule 7) — an array of enum
+ids; [] when no enum entry applies. It is independent of the optional care_path phase timeline.
+Return ONLY the JSON object - no markdown fences, no explanations.`;
+}
 
 // Build the per-trial user prompt depending on the source format.
 function buildUserPrompt(raw) {
@@ -880,6 +1019,7 @@ function buildCtgovPrompt(study) {
 
 async function callOpenAI(raw) {
   if (!state.apiKey) throw new Error("Missing OpenAI API key. Save it in the header.");
+  const systemPrompt = buildSystemPrompt();
   const body = {
     model: state.model,
     // dangerouslyAllowBrowser is an SDK-level flag; the raw fetch endpoint accepts
@@ -888,7 +1028,7 @@ async function callOpenAI(raw) {
     // (gpt-5.x and reasoning variants) only accept the default value.
     response_format: { type: "json_object" },
     messages: [
-      { role: "system", content: SYSTEM_PROMPT },
+      { role: "system", content: systemPrompt },
       { role: "user", content: buildUserPrompt(raw) },
     ],
   };
@@ -952,22 +1092,98 @@ function sanitizeTrial(t) {
   // Renumber priority_level as a simple 1..N rank so it always matches the
   // visible list position (drag-reorder updates it in lock-step).
   t.criteria.forEach((c, i) => { c.priority_level = i + 1; });
-  // Care-path enum assignment (id from state.carePaths). Defaults to "" —
-  // will be auto-assigned later by alias matching against diseases / title.
-  t.care_path_id = typeof t.care_path_id === "string" ? t.care_path_id : "";
+  // Care-path enum assignment (ids from state.carePaths). A trial may belong to
+  // MULTIPLE normalized care paths. Keeps only ids that exist in the active enum
+  // (or all provided ids when the enum is still empty, so nothing is lost before
+  // detection runs).
+  t.care_path_ids = normalizeCarePathIds(Array.isArray(t.care_path_ids) ? t.care_path_ids : []);
   // Trial-level active flag. Inactive trials are still exported but flagged so
   // the downstream matcher can skip them. Defaults to true.
   t.active = (t.active === false) ? false : true;
+  // Edit-state provenance. Tracks whether the trial was produced/updated by AI
+  // and whether a human hand-edited it in the workspace. Persisted on export
+  // and restored on import so manual work is never lost or repeated.
+  t.edit_state = normalizeEditState(t.edit_state);
   return t;
+}
+
+// Normalize an edit-state record. Accepts partial shapes and always returns
+// the full { ai, manual, ai_at, manual_at, ai_by } structure.
+function normalizeEditState(s) {
+  s = (s && typeof s === "object") ? s : {};
+  return {
+    ai: !!s.ai,
+    manual: !!s.manual,
+    ai_at: typeof s.ai_at === "string" ? s.ai_at : "",
+    manual_at: typeof s.manual_at === "string" ? s.manual_at : "",
+    ai_by: typeof s.ai_by === "string" ? s.ai_by : "",
+  };
+}
+
+// Mark a trial as produced/updated by AI (fresh extraction or pasted JSON).
+function markTrialAI(trial, by) {
+  if (!trial) return;
+  trial.edit_state = normalizeEditState(trial.edit_state);
+  trial.edit_state.ai = true;
+  trial.edit_state.ai_at = new Date().toISOString();
+  if (by) trial.edit_state.ai_by = String(by);
+  refreshTrialProvenance(trial);
+}
+
+// Mark a trial as hand-edited by the user and refresh its overview badges.
+// Call from every manual-edit handler in the workspace so the provenance
+// indicator and the "edited" counter stay accurate.
+function markTrialEdited(trial) {
+  if (!trial) return;
+  trial.edit_state = normalizeEditState(trial.edit_state);
+  if (!trial.edit_state.manual) {
+    trial.edit_state.manual = true;
+  }
+  trial.edit_state.manual_at = new Date().toISOString();
+  refreshTrialProvenance(trial);
+}
+
+// Repaint the per-row provenance pills + the top "edited" stat for a trial
+// without re-rendering its whole card. No-op if the row isn't mounted yet.
+function refreshTrialProvenance(trial) {
+  if (!trial || !Array.isArray(trialItems)) return;
+  const idx = trialItems.findIndex(it => it.result === trial);
+  if (idx >= 0) {
+    const list = document.getElementById("trialsList");
+    const prov = list?.querySelector(`details[data-idx="${idx}"] [data-prov]`);
+    if (prov) prov.innerHTML = provenancePillsHtml(trial.edit_state);
+  }
+  updateEditedStat();
+}
+
+// Small inline pills shown in each trial row summarising who touched it.
+function provenancePillsHtml(es) {
+  es = normalizeEditState(es);
+  const pills = [];
+  if (es.ai) {
+    pills.push(`<span class="badge bg-violet-50 text-violet-700" title="Structured by AI${es.ai_by ? ` (${escapeHtml(es.ai_by)})` : ""}">AI</span>`);
+  }
+  if (es.manual) {
+    pills.push(`<span class="badge bg-indigo-50 text-indigo-700" title="Includes manual edits — preserved when you resume from an export">Edited</span>`);
+  }
+  return pills.join("");
+}
+
+// Recount trials carrying manual edits and update the overview stat.
+function updateEditedStat() {
+  const el = document.getElementById("statEdited");
+  if (!el || !Array.isArray(trialItems)) return;
+  const n = trialItems.filter(it => it.result?.edit_state?.manual).length;
+  el.textContent = String(n);
 }
 
 function sanitizeCriterion(c, i) {
   c = c || {};
   const type = c.type === "exclusion" ? "exclusion" : "inclusion";
   const prefix = type === "exclusion" ? "EXC" : "INC";
-  // Closed category vocabulary: doc-hierarchy ids (excluding "unknown") + "other".
-  const rawCat = String(c.category || "").toLowerCase().trim();
-  const category = KNOWN_CATEGORIES.has(rawCat) ? rawCat : "other";
+  // Closed category vocabulary: current routing-profile document ids.
+  const rawCat = coerceDocIdToProfile(c.category);
+  const category = rawCat || (isKnownDocId("other") ? "other" : (currentDocIds()[0] || "other"));
   // Priority is the initial DAG funnel tier (1–5) coming from the LLM. We
   // store it temporarily; sanitizeTrial then re-numbers all criteria as
   // sequential 1..N ranks based on their post-sort position in the list.
@@ -981,8 +1197,8 @@ function sanitizeCriterion(c, i) {
     priority_level: prio,
     status: c.status === "inactive" ? "inactive" : "active",
     routing: {
-      primary_docs:  Array.isArray(c.routing?.primary_docs)  ? c.routing.primary_docs.filter(d => DOC_BY_ID[d])  : [],
-      fallback_docs: Array.isArray(c.routing?.fallback_docs) ? c.routing.fallback_docs.filter(d => DOC_BY_ID[d]) : [],
+      primary_docs:  Array.isArray(c.routing?.primary_docs)  ? c.routing.primary_docs.map(coerceDocIdToProfile).filter(Boolean)  : [],
+      fallback_docs: Array.isArray(c.routing?.fallback_docs) ? c.routing.fallback_docs.map(coerceDocIdToProfile).filter(Boolean) : [],
     },
     evaluation_type: c.evaluation_type === "quantitative" ? "quantitative" : "boolean",
     structured_target: null,
@@ -1006,30 +1222,38 @@ function sanitizeCriterion(c, i) {
     if (st.upper_value !== undefined) out.structured_target.upper_value = +st.upper_value;
   }
 
-  // Default-three-primary-docs rule: every criterion ships with a sensible
-  // base trio of checked primary documents (intake notes, MDO notes, and a
-  // third doc inferred from the criterion's category). Anything the LLM
-  // routed beyond that becomes optional fallback.
+  // Profile-aware fallback rule: preserve model/user routing when present. If
+  // missing, seed the primary routes from the profile's default scan set. The
+  // default scan set is the max primary-doc visit set for most criteria.
   const llmPrimary = out.routing.primary_docs.slice();
   const llmFallback = out.routing.fallback_docs.slice();
-  const inferred = inferThirdPrimary(out);
-  const primarySet = new Set([...DEFAULT_PRIMARY_BASE, inferred, ...llmPrimary]);
+  const defaultScan = defaultScanDocIds();
+  // Primary-doc cap follows the user-defined default scan set (min 3).
+  const primaryCap = Math.max(defaultScan.length, 3);
+  const inferred = inferBestProfileDoc(out);
+  let primarySeed;
+  if (llmPrimary.length) {
+    primarySeed = llmPrimary.slice(0, primaryCap);
+  } else {
+    const specific = [category, inferred].find(d => d && d !== "other" && isKnownDocId(d));
+    primarySeed = specific && !defaultScan.includes(specific)
+      ? [specific, ...defaultScan].slice(0, primaryCap)
+      : defaultScan.slice();
+  }
   // When the criterion is itself an "other / soft" rule (consent, willingness,
   // logistics…) auto-mark the Other chip as primary so the free-text guidance
-  // textarea is surfaced. Same for legacy data that carried `other_active` or
-  // existing guidance text.
+  // textarea is surfaced. Same when the criterion carries an `other_active`
+  // flag or existing guidance text.
   const isOther = out.category === "other"
     || c.other_active === true
     || (typeof c.guidance === "string" && c.guidance.trim() !== "");
-  if (isOther) primarySet.add("other");
-  // "unknown" should never be in the primary trio if we have anything else.
-  primarySet.delete("unknown");
-  out.routing.primary_docs = Array.from(primarySet).filter(d => DOC_BY_ID[d]);
-  // Fallbacks = LLM-suggested + LLM-primary that didn't make the trio,
-  // de-duped against primaries.
-  const fbSet = new Set([...llmFallback, ...llmPrimary.filter(d => !primarySet.has(d))]);
+  if (isOther) primarySeed = ["other", ...primarySeed.filter(d => d !== "other")].slice(0, primaryCap);
+  const primarySet = new Set(primarySeed);
+  out.routing.primary_docs = Array.from(primarySet).filter(d => isKnownDocId(d));
+  // Fallbacks = LLM-suggested + primary suggestions beyond the default cap.
+  const fbSet = new Set([...llmFallback, ...llmPrimary.slice(3)]);
   out.routing.primary_docs.forEach(d => fbSet.delete(d));
-  out.routing.fallback_docs = Array.from(fbSet).filter(d => DOC_BY_ID[d]);
+  out.routing.fallback_docs = Array.from(fbSet).filter(d => isKnownDocId(d));
   return out;
 }
 
@@ -1048,6 +1272,8 @@ function isoDate(s) {
 async function runQueue() {
   if (state.running) return;
   state.abort = false;
+  saveRoutingProfile();
+  renderRoutingProfileEditor();
 
   // 1. Gather raw rows
   setProgress(0, "Reading raw rows...");
@@ -1065,6 +1291,7 @@ async function runQueue() {
 
   // 2. Cap by maxTrials and classify (delta-diff against existing export)
   rawRows = rawRows.slice(0, state.maxTrials);
+  state.rawRows = rawRows;
   const items = classifyRows(rawRows);
   state.results = items.map(it => it.result);
   state.resultsById = {};
@@ -1091,6 +1318,14 @@ async function runQueue() {
     manualBanner.classList.add("hidden");
   }
 
+  // 2b. Auto-fill the care-path enum from the uploaded sample before per-trial
+  // extraction, so the extractor can assign normalized care_path_ids directly.
+  // Skips silently on failure; users can still detect/edit manually.
+  if (!state.carePaths.length) {
+    setProgress(0, "Detecting care paths from sample…");
+    try { await detectCarePathsFromSample({ silent: true }); } catch {}
+  }
+
   // 3. Process pending entries with throttle
   state.running = true;
   document.getElementById("processBtn").disabled = true;
@@ -1113,14 +1348,16 @@ async function runQueue() {
       if (!result.trial_id || result.trial_id === "string") result.trial_id = it.preview.id;
       // Preserve any pre-extraction active toggle the user already flipped.
       if (it.userActive === false) result.active = false;
+      markTrialAI(result, `openai/${state.model}`);
       it.result = result;
       it.status = "done";
       state.results[i] = result;
       state.resultsById[result.trial_id] = result;
-      // Auto-assign care path enum if any are defined.
+      // Merge LLM-supplied + alias-inferred care paths (multi-valued). Any
+      // user edits made later are preserved because re-runs go through here once.
       if (state.carePaths.length) {
-        const cpId = inferCarePathId(result);
-        if (cpId) result.care_path_id = cpId;
+        const inferred = inferCarePathIds(result);
+        result.care_path_ids = normalizeCarePathIds([...(result.care_path_ids || []), ...inferred]);
       }
     } catch (e) {
       it.error = e.message;
@@ -1164,6 +1401,9 @@ function updateStats(items) {
   document.getElementById("statDone").textContent = done;
   document.getElementById("statSkip").textContent = reused;
   document.getElementById("statErr").textContent = err;
+  const edited = items.filter(i => i.result?.edit_state?.manual).length;
+  const editedEl = document.getElementById("statEdited");
+  if (editedEl) editedEl.textContent = edited;
 }
 
 function statusBadge(status) {
@@ -1180,6 +1420,260 @@ function statusBadge(status) {
 }
 
 const trialItems = []; // mirrors items array for re-rendering
+
+// --------------------------- Routing Profile ---------------------------
+function loadRoutingProfile() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(ROUTING_PROFILE_STORAGE) || "null");
+    state.routingProfile = normalizeRoutingProfile(saved || DEFAULT_ROUTING_PROFILE);
+  } catch {
+    state.routingProfile = normalizeRoutingProfile(DEFAULT_ROUTING_PROFILE);
+  }
+}
+
+function saveRoutingProfile() {
+  state.routingProfile = normalizeRoutingProfile(state.routingProfile);
+  try { localStorage.setItem(ROUTING_PROFILE_STORAGE, JSON.stringify(state.routingProfile)); } catch {}
+}
+
+function routingProfileStatus(message) {
+  const el = document.getElementById("routingProfileStatus");
+  if (!el) return;
+  const scanCount = defaultScanDocIds().length;
+  el.textContent = message || `${matrixDocs().length} document types. ${scanCount} marked as the default scan set for most criteria.`;
+}
+
+function uniqueRoutingDocId(base, exceptId = "") {
+  const taken = new Set(currentDocIds().filter(id => id !== exceptId));
+  let id = normalizeDocId(base), n = 2;
+  while (taken.has(id)) id = `${normalizeDocId(base)}_${n++}`;
+  return id;
+}
+
+function remapCriterionDocId(criterion, oldId, newId) {
+  if (!criterion) return;
+  if (criterion.category === oldId) criterion.category = newId;
+  ["primary_docs", "fallback_docs"].forEach(key => {
+    const arr = criterion.routing?.[key];
+    if (!Array.isArray(arr)) return;
+    criterion.routing[key] = [...new Set(arr.map(id => id === oldId ? newId : id))];
+  });
+}
+
+function renameRoutingDocId(oldId, newId) {
+  if (!oldId || !newId || oldId === newId) return;
+  const scan = state.routingProfile?.default_scan_set;
+  if (Array.isArray(scan)) {
+    state.routingProfile.default_scan_set = scan.map(id => (id === oldId ? newId : id));
+  }
+  const allTrials = [
+    ...(state.results || []),
+    ...Object.values(state.resultsById || {}),
+    ...Object.values(state.existingById || {}),
+  ];
+  allTrials.forEach(t => (t?.criteria || []).forEach(c => remapCriterionDocId(c, oldId, newId)));
+}
+
+function removeRoutingDocId(id) {
+  const scan = state.routingProfile?.default_scan_set;
+  if (Array.isArray(scan)) {
+    state.routingProfile.default_scan_set = scan.filter(d => d !== id);
+  }
+  const allTrials = [
+    ...(state.results || []),
+    ...Object.values(state.resultsById || {}),
+    ...Object.values(state.existingById || {}),
+  ];
+  allTrials.forEach(t => (t?.criteria || []).forEach(c => {
+    if (c.category === id) c.category = isKnownDocId("other") ? "other" : (currentDocIds()[0] || "other");
+    if (c.routing) {
+      c.routing.primary_docs = (c.routing.primary_docs || []).filter(d => d !== id);
+      c.routing.fallback_docs = (c.routing.fallback_docs || []).filter(d => d !== id);
+    }
+  }));
+}
+
+function refreshRoutingDependentUi() {
+  saveRoutingProfile();
+  renderRoutingProfileEditor();
+  trialItems.forEach((it, i) => { if (it.result) renderRow(it, i); });
+}
+
+function renderRoutingProfileEditor() {
+  const host = document.getElementById("routingProfileList");
+  if (!host) return;
+  const docs = matrixDocs();
+  if (!docs.length) {
+    host.innerHTML = `<div class="text-xs text-slate-500 italic p-3 border border-dashed border-slate-200 rounded-lg text-center">No document types configured.</div>`;
+    routingProfileStatus();
+    return;
+  }
+  if (!state.selectedRoutingDocId || !docs.some(d => d.id === state.selectedRoutingDocId)) {
+    state.selectedRoutingDocId = docs[0].id;
+  }
+  const selected = docs.find(d => d.id === state.selectedRoutingDocId) || docs[0];
+  const selectedIdx = docs.findIndex(d => d.id === selected.id);
+  host.innerHTML = `
+    <div class="overflow-x-auto pb-2">
+      <div class="flex gap-2 min-w-max" data-routing-strip>
+        ${docs.map((d, i) => {
+          const active = d.id === selected.id;
+          const inDefaultScan = isDefaultScanDocId(d.id);
+          return `
+            <button type="button" data-routing-doc="${escapeHtml(d.id)}"
+              draggable="true"
+              class="w-36 text-left rounded-lg border px-2.5 py-2 transition ${active ? "bg-slate-900 text-white border-slate-900 shadow-sm" : "bg-white text-slate-700 border-slate-200 hover:border-slate-400"}">
+              <div class="flex items-center justify-between gap-2">
+                <span class="w-6 h-6 grid place-items-center rounded-full text-[10px] font-bold ${active ? "bg-white/15 text-white" : "bg-slate-100 text-slate-600"}">${i + 1}</span>
+                <span class="text-[10px] font-mono truncate ${active ? "text-white/70" : "text-slate-400"}">${escapeHtml(d.id)}</span>
+              </div>
+              <div class="mt-2 text-[13px] font-semibold truncate">${escapeHtml(d.short || d.label)}</div>
+              <div class="mt-0.5 text-[10px] truncate ${active ? "text-white/65" : "text-slate-500"}">${escapeHtml(d.label)}</div>
+              ${inDefaultScan ? `<div class="mt-1 text-[9px] font-semibold uppercase tracking-wider ${active ? "text-white/65" : "text-emerald-700"}">default scan</div>` : ""}
+            </button>
+          `;
+        }).join("")}
+      </div>
+    </div>
+
+    <div class="mt-3 rounded-lg border border-slate-200 bg-slate-50/60 p-3" data-routing-details="${escapeHtml(selected.id)}">
+      <div class="flex items-center justify-between gap-3 flex-wrap">
+        <div>
+          <div class="text-[10px] uppercase tracking-wider font-semibold text-slate-500">Selected document type</div>
+          <div class="mt-0.5 flex items-center gap-2">
+            <span class="w-7 h-7 grid place-items-center rounded-full bg-white border border-slate-200 text-[11px] font-bold text-slate-600">${selectedIdx + 1}</span>
+            <span class="text-sm font-semibold text-slate-900">${escapeHtml(selected.label)}</span>
+            <span class="text-[10px] font-mono text-slate-400">${escapeHtml(selected.id)}</span>
+          </div>
+        </div>
+        <div class="flex items-center gap-1.5">
+          <button type="button" data-doc-scan aria-pressed="${isDefaultScanDocId(selected.id)}"
+            title="Include this document type in the default scan set used for most criteria."
+            class="text-[11px] font-semibold rounded-lg border px-2.5 py-1.5 transition ${isDefaultScanDocId(selected.id) ? "border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100" : "border-slate-200 bg-white text-slate-500 hover:text-slate-700"}">
+            ${isDefaultScanDocId(selected.id) ? "✓ In default scan" : "Add to default scan"}
+          </button>
+          <button type="button" data-doc-delete ${selected.id === "other" ? "disabled" : ""}
+            title="${selected.id === "other" ? "The other document type is kept as the soft-criteria fallback." : "Delete document type"}"
+            class="text-[11px] font-semibold rounded-lg border border-slate-200 bg-white text-slate-500 px-2.5 py-1.5 hover:text-rose-600 disabled:opacity-40 disabled:hover:text-slate-500">Delete</button>
+        </div>
+      </div>
+      <div class="mt-3 grid grid-cols-12 gap-2">
+        <label class="col-span-12 md:col-span-3 text-[10px] uppercase tracking-wider text-slate-500 font-semibold">
+          Id
+          <input data-doc-id value="${escapeHtml(selected.id)}" ${selected.id === "other" ? "disabled" : ""}
+            class="mt-1 w-full text-[11px] font-mono rounded border border-slate-200 bg-white px-2 py-1.5 focus:border-blue-400 focus:outline-none disabled:bg-slate-100 disabled:text-slate-400"/>
+        </label>
+        <label class="col-span-12 md:col-span-5 text-[10px] uppercase tracking-wider text-slate-500 font-semibold">
+          Label
+          <input data-doc-label value="${escapeHtml(selected.label)}"
+            class="mt-1 w-full text-[12px] rounded border border-slate-200 bg-white px-2 py-1.5 focus:border-blue-400 focus:outline-none"/>
+        </label>
+        <label class="col-span-12 md:col-span-4 text-[10px] uppercase tracking-wider text-slate-500 font-semibold">
+          Hint
+          <input data-doc-hint value="${escapeHtml(selected.hint)}"
+            class="mt-1 w-full text-[12px] rounded border border-slate-200 bg-white px-2 py-1.5 focus:border-blue-400 focus:outline-none"/>
+        </label>
+      </div>
+    </div>
+  `;
+
+  host.querySelectorAll("[data-routing-doc]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      state.selectedRoutingDocId = btn.dataset.routingDoc;
+      renderRoutingProfileEditor();
+    });
+    btn.addEventListener("dragstart", e => {
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", btn.dataset.routingDoc || "");
+      btn.classList.add("opacity-50");
+    });
+    btn.addEventListener("dragend", () => btn.classList.remove("opacity-50"));
+    btn.addEventListener("dragover", e => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+    });
+    btn.addEventListener("drop", e => {
+      e.preventDefault();
+      const sourceId = e.dataTransfer.getData("text/plain");
+      const targetId = btn.dataset.routingDoc;
+      if (!sourceId || !targetId || sourceId === targetId) return;
+      const arr = state.routingProfile.document_types;
+      const sourceIdx = arr.findIndex(d => d.id === sourceId);
+      const targetIdx = arr.findIndex(d => d.id === targetId);
+      if (sourceIdx < 0 || targetIdx < 0) return;
+      const [moved] = arr.splice(sourceIdx, 1);
+      const rect = btn.getBoundingClientRect();
+      const before = e.clientX < rect.left + rect.width / 2;
+      let insertIdx = arr.findIndex(d => d.id === targetId);
+      if (!before) insertIdx += 1;
+      arr.splice(insertIdx, 0, moved);
+      state.selectedRoutingDocId = sourceId;
+      refreshRoutingDependentUi();
+    });
+  });
+
+  const selectedDoc = state.routingProfile.document_types.find(d => d.id === selected.id);
+  if (selectedDoc) {
+    const liveSave = () => { saveRoutingProfile(); routingProfileStatus("Routing profile saved."); };
+    host.querySelector("[data-doc-label]")?.addEventListener("input", e => {
+      selectedDoc.label = e.target.value;
+      selectedDoc.short = deriveDocShort(selectedDoc.label, selectedDoc.id);
+      liveSave();
+      trialItems.forEach((it, i) => { if (it.result) renderRow(it, i); });
+    });
+    host.querySelector("[data-doc-hint]")?.addEventListener("input", e => { selectedDoc.hint = e.target.value; liveSave(); });
+    host.querySelector("[data-doc-scan]")?.addEventListener("click", () => {
+      toggleDefaultScanDocId(selected.id);
+      refreshRoutingDependentUi();
+      routingProfileStatus(`Default scan set: ${defaultScanDocIds().length} document type${defaultScanDocIds().length === 1 ? "" : "s"}.`);
+    });
+    host.querySelector("[data-doc-id]")?.addEventListener("blur", e => {
+      const next = uniqueRoutingDocId(e.target.value, selected.id);
+      if (next !== selected.id) {
+        selectedDoc.id = next;
+        state.selectedRoutingDocId = next;
+        renameRoutingDocId(selected.id, next);
+      }
+      refreshRoutingDependentUi();
+      routingProfileStatus("Routing profile saved.");
+    });
+    host.querySelector("[data-doc-delete]")?.addEventListener("click", () => {
+      if (!confirm(`Delete document type "${selectedDoc.label}"? Existing criterion routes to it will be removed.`)) return;
+      state.routingProfile.document_types = state.routingProfile.document_types.filter(d => d.id !== selected.id);
+      removeRoutingDocId(selected.id);
+      state.selectedRoutingDocId = state.routingProfile.document_types[Math.max(0, selectedIdx - 1)]?.id || "";
+      refreshRoutingDependentUi();
+    });
+  }
+  routingProfileStatus();
+}
+
+function bindRoutingProfileControls() {
+  document.getElementById("addRoutingDocBtn")?.addEventListener("click", () => {
+    const label = prompt("New document type label (e.g. Radiation plan):");
+    if (!label) return;
+    const id = uniqueRoutingDocId(label);
+    const doc = {
+      id,
+      label: label.trim(),
+      short: deriveDocShort(label, id),
+      group: "custom",
+      hint: "",
+      concept_domain: "other",
+    };
+    const otherIdx = state.routingProfile.document_types.findIndex(d => d.id === "other");
+    if (otherIdx >= 0) state.routingProfile.document_types.splice(otherIdx, 0, doc);
+    else state.routingProfile.document_types.push(doc);
+    refreshRoutingDependentUi();
+    routingProfileStatus("Document type added.");
+  });
+  document.getElementById("resetRoutingProfileBtn")?.addEventListener("click", () => {
+    if (!confirm("Reset document types and visit order to the default profile?")) return;
+    state.routingProfile = normalizeRoutingProfile(DEFAULT_ROUTING_PROFILE);
+    refreshRoutingDependentUi();
+    routingProfileStatus("Routing profile reset to default.");
+  });
+}
 
 function renderTrials(items) {
   trialItems.length = 0;
@@ -1210,6 +1704,7 @@ function buildRow(it, i) {
       // and copy it onto `it.result` once extraction finishes.
       if (it.result) {
         it.result.active = it.result.active === false ? true : false;
+        markTrialEdited(it.result);
       } else {
         it.userActive = it.userActive === false ? true : false;
       }
@@ -1262,6 +1757,10 @@ function updateRow(root, it) {
     counts = `${act}/${total} criteria active · ${it.result.care_path?.phases?.length || 0} phases`;
   }
   root.querySelector("[data-counts]").textContent = counts;
+  // Provenance pills: shows whether the trial was structured by an LLM and/or
+  // carries manual edits, so reviewers can see at a glance what's been touched.
+  const prov = root.querySelector("[data-prov]");
+  if (prov) prov.innerHTML = it.result ? provenancePillsHtml(it.result.edit_state) : "";
 }
 
 function renderBody(host, it, i) {
@@ -1327,8 +1826,8 @@ function renderBody(host, it, i) {
           <input type="text" data-mfield="drugs" data-mlist="1" value="${escapeHtml((m.drugs||[]).join(", "))}" placeholder="comma-separated" class="meta-input"/>
           <label class="text-slate-500 self-center">Diseases</label>
           <input type="text" data-mfield="diseases" data-mlist="1" value="${escapeHtml((m.diseases||[]).join(", "))}" placeholder="comma-separated" class="meta-input"/>
-          <label class="text-slate-500 self-center">Care path</label>
-          <select data-mfield="care_path_id" data-mtarget="trial" class="meta-input">${carePathOptionsHtml(t.care_path_id || "")}</select>
+          <label class="text-slate-500 self-center">Care paths</label>
+          <div data-cp-editor>${carePathChipsHtml(t.care_path_ids || [])}</div>
           <label class="text-slate-500 self-center">Start</label>
           <input type="date" data-mfield="lifecycle_dates.start_date" value="${escapeHtml(ld.start_date||"")}" class="meta-input"/>
           <label class="text-slate-500 self-center">Primary close</label>
@@ -1376,6 +1875,7 @@ function renderBody(host, it, i) {
 // Wire up live edits on the editable metadata card.
 function bindMetadataInputs(host, trial) {
   trial.metadata = trial.metadata || {};
+  bindCarePathEditor(host, trial);
   host.querySelectorAll("[data-mfield]").forEach(input => {
     input.addEventListener("input", () => {
       const field = input.dataset.mfield;
@@ -1385,11 +1885,10 @@ function bindMetadataInputs(host, trial) {
       } else if (input.type === "number") {
         value = value === "" ? null : Number(value);
       }
-      // Fields targeting the trial root (e.g. care_path_id) rather than
-      // trial.metadata.* live alongside the title without dot-notation.
+      // Fields targeting the trial root rather than trial.metadata.* live
+      // alongside the title without dot-notation.
       if (input.dataset.mtarget === "trial") {
         trial[field] = value;
-        if (field === "care_path_id") renderCarePathsPanel();
         return;
       }
       const path = field.split(".");
@@ -1399,14 +1898,45 @@ function bindMetadataInputs(host, trial) {
         target = target[path[i]];
       }
       target[path[path.length - 1]] = value;
+      markTrialEdited(trial);
     });
   });
+}
+
+// Wire the multi-select care-path chips editor in the metadata card.
+function bindCarePathEditor(host, trial) {
+  const editor = host.querySelector("[data-cp-editor]");
+  if (!editor) return;
+  trial.care_path_ids = normalizeCarePathIds(trial.care_path_ids);
+  const rerender = () => {
+    editor.innerHTML = carePathChipsHtml(trial.care_path_ids || []);
+    wire();
+    renderCarePathsPanel();
+  };
+  const wire = () => {
+    editor.querySelectorAll("[data-cp-chip-remove]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const id = btn.dataset.cpChipRemove;
+        trial.care_path_ids = (trial.care_path_ids || []).filter(x => x !== id);
+        markTrialEdited(trial);
+        rerender();
+      });
+    });
+    editor.querySelector("[data-cp-add]")?.addEventListener("change", e => {
+      const id = e.target.value;
+      if (!id) return;
+      trial.care_path_ids = normalizeCarePathIds([...(trial.care_path_ids || []), id]);
+      markTrialEdited(trial);
+      rerender();
+    });
+  };
+  wire();
 }
 
 // Wire up the per-trial manual copy/paste panel.
 function bindManualPanel(host, it, i) {
   const userPrompt = buildUserPrompt(it.raw);
-  const fullPrompt = `[SYSTEM]\n${SYSTEM_PROMPT}\n\n[USER]\n${userPrompt}`;
+  const fullPrompt = `[SYSTEM]\n${buildSystemPrompt()}\n\n[USER]\n${userPrompt}`;
   const copyStatus = host.querySelector("[data-copy-status]");
   const flash = (msg) => {
     if (!copyStatus) return;
@@ -1430,6 +1960,7 @@ function bindManualPanel(host, it, i) {
       const parsed = JSON.parse(txt);
       const clean = sanitizeTrial(parsed);
       if (!clean.trial_id || clean.trial_id === "string") clean.trial_id = it.preview.id;
+      markTrialAI(clean, "manual-paste");
       it.result = clean;
       it.status = "done";
       it.error = null;
@@ -1516,17 +2047,33 @@ function uniqueCarePathId(base) {
   return id;
 }
 
+// Normalize an arbitrary list of care-path ids: lowercase, dedupe, and (when an
+// enum is defined) keep only ids that exist in it. When the enum is still empty
+// the raw ids are preserved so an LLM-supplied assignment survives until detection.
+function normalizeCarePathIds(ids) {
+  const out = [];
+  const known = state.carePaths.length ? new Set(state.carePaths.map(c => c.id)) : null;
+  (Array.isArray(ids) ? ids : []).forEach(raw => {
+    const id = String(raw || "").trim().toLowerCase();
+    if (!id) return;
+    if (known && !known.has(id)) return;
+    if (!out.includes(id)) out.push(id);
+  });
+  return out;
+}
+
 // Best-effort auto-assignment: lowercase alias match against the trial's
-// title + diseases + first-N criterion texts. Returns "" if no match.
-function inferCarePathId(trial) {
-  if (!state.carePaths.length || !trial) return "";
+// title + diseases + first-N criterion texts. Returns ALL matching care-path
+// ids (a trial can map to several), strongest match first. Empty when none.
+function inferCarePathIds(trial) {
+  if (!state.carePaths.length || !trial) return [];
   const m = trial.metadata || {};
   const hay = [
     m.brief_title || "",
     (m.diseases || []).join(" "),
     (trial.criteria || []).slice(0, 6).map(c => c.original_text || "").join(" "),
   ].join(" ").toLowerCase();
-  let best = "", bestScore = 0;
+  const scored = [];
   for (const cp of state.carePaths) {
     const aliases = [cp.label, ...(cp.aliases || [])].map(a => String(a).toLowerCase().trim()).filter(Boolean);
     let score = 0;
@@ -1534,33 +2081,37 @@ function inferCarePathId(trial) {
       if (!a || a.length < 3) continue;
       if (hay.includes(a)) score += a.length;
     }
-    if (score > bestScore) { bestScore = score; best = cp.id; }
+    if (score > 0) scored.push({ id: cp.id, score });
   }
-  return best;
+  scored.sort((a, b) => b.score - a.score);
+  return scored.map(s => s.id);
 }
 
 function reassignAllCarePaths() {
   let changed = 0;
   (state.results || []).forEach(t => {
     if (!t) return;
-    const id = inferCarePathId(t);
-    if (id && t.care_path_id !== id) { t.care_path_id = id; changed++; }
+    const inferred = inferCarePathIds(t);
+    if (!inferred.length) return;
+    const next = normalizeCarePathIds([...(t.care_path_ids || []), ...inferred]);
+    if (next.join("|") !== (t.care_path_ids || []).join("|")) { t.care_path_ids = next; changed++; }
   });
   return changed;
 }
 
-async function detectCarePathsFromSample() {
+async function detectCarePathsFromSample({ silent = false } = {}) {
   const statusEl = document.getElementById("carePathsStatus");
+  const setStatus = (html) => { if (statusEl) statusEl.innerHTML = html; };
   if (!state.apiKey) {
-    statusEl.innerHTML = `<span class="text-rose-600">Save an OpenAI key in the header to detect care paths.</span>`;
+    if (!silent) setStatus(`<span class="text-rose-600">Save an OpenAI key in the header to detect care paths.</span>`);
     return;
   }
   const sample = (state.rawRows || []).slice(0, 12);
   if (!sample.length) {
-    statusEl.innerHTML = `<span class="text-rose-600">Load trials first (upload a source file).</span>`;
+    if (!silent) setStatus(`<span class="text-rose-600">Load trials first (upload a source file).</span>`);
     return;
   }
-  statusEl.innerHTML = `<span class="italic text-slate-500">Sampling ${sample.length} trials…</span>`;
+  setStatus(`<span class="italic text-slate-500">Sampling ${sample.length} trials…</span>`);
   const sys = `You normalize clinical trials from ANY field of medicine (oncology, cardiology, neurology, endocrinology, infectious disease, rheumatology, …) into a small enum of CARE PATHS — clinical-domain buckets used downstream for patient matching. Examples (illustrative, NOT exhaustive): "breast_cancer", "prostate_cancer", "heart_failure", "atrial_fibrillation", "type_2_diabetes", "alzheimer_disease", "rheumatoid_arthritis", "hiv". Given a sample of trials in any language (e.g. Dutch "borst"/"mamma" -> breast cancer, "prostaat" -> prostate cancer, "hartfalen" -> heart failure, "suikerziekte" -> diabetes), return a deduplicated enum covering ALL of them. Return STRICT JSON: {"care_paths":[{"id":"breast_cancer","label":"Breast cancer","aliases":["breast cancer","mamma","mammacarcinoma","borst","borstkanker"]}]}. Use snake_case English ids. Choose specificity that matches the sample (sub-types when meaningful, broader domains when not). Aliases MUST include every language/spelling/synonym that appears in the sample so downstream alias-matching can place trials into the right bucket. Use lowercase aliases. 3-15 care paths total. No prose.`;
   const condensed = sample.map((r, i) => {
     const title = r.__raw?.metadata?.brief_title || r.__raw?.brief_title || r.__raw?.Studietitel || r.__raw?.Titel || "";
@@ -1603,18 +2154,32 @@ async function detectCarePathsFromSample() {
     renderCarePathsPanel();
     // Refresh visible trial bodies so their dropdowns reflect new ids.
     trialItems.forEach((it, i) => { if (it.result) renderRow(it, i); });
-    statusEl.innerHTML = `<span class="text-emerald-700">Detected ${list.length} care path(s). Auto-assigned ${changed} trial(s).</span>`;
+    setStatus(`<span class="text-emerald-700">Detected ${list.length} care path(s). Auto-assigned ${changed} trial(s).</span>`);
   } catch (e) {
-    statusEl.innerHTML = `<span class="text-rose-600">Detection failed: ${escapeHtml(e.message)}</span>`;
+    setStatus(`<span class="text-rose-600">Detection failed: ${escapeHtml(e.message)}</span>`);
   }
 }
 
-function carePathOptionsHtml(selectedId) {
-  const opts = [`<option value="">— unassigned —</option>`];
-  state.carePaths.forEach(cp => {
-    opts.push(`<option value="${escapeHtml(cp.id)}"${cp.id === selectedId ? " selected" : ""}>${escapeHtml(cp.label)}</option>`);
-  });
-  return opts.join("");
+// Multi-select care-path editor for a trial: removable chips for each assigned
+// id plus an "add" dropdown of the remaining enum entries.
+function carePathChipsHtml(selectedIds) {
+  const ids = Array.isArray(selectedIds) ? selectedIds : [];
+  const byId = Object.fromEntries(state.carePaths.map(c => [c.id, c]));
+  const chips = ids.map(id => {
+    const label = byId[id]?.label || id;
+    return `<span class="badge bg-blue-50 text-blue-700 border border-blue-200 inline-flex items-center gap-1" data-cp-chip="${escapeHtml(id)}">
+      ${escapeHtml(label)}
+      <button type="button" data-cp-chip-remove="${escapeHtml(id)}" title="Remove" class="text-blue-400 hover:text-rose-600 leading-none">×</button>
+    </span>`;
+  }).join("");
+  const remaining = state.carePaths.filter(cp => !ids.includes(cp.id));
+  const addSelect = remaining.length
+    ? `<select data-cp-add class="meta-input text-[11px] py-0.5">
+         <option value="">+ add care path…</option>
+         ${remaining.map(cp => `<option value="${escapeHtml(cp.id)}">${escapeHtml(cp.label)}</option>`).join("")}
+       </select>`
+    : (state.carePaths.length ? `<span class="text-[10px] text-slate-400 italic">all assigned</span>` : `<span class="text-[10px] text-slate-400 italic">no care paths defined</span>`);
+  return `<div class="flex flex-wrap items-center gap-1" data-cp-chips>${chips}${addSelect}</div>`;
 }
 
 function renderCarePathsPanel() {
@@ -1630,7 +2195,7 @@ function renderCarePathsPanel() {
   }
   // Per-care-path count of currently-assigned trials.
   const counts = {};
-  (state.results || []).forEach(t => { if (t?.care_path_id) counts[t.care_path_id] = (counts[t.care_path_id] || 0) + 1; });
+  (state.results || []).forEach(t => (t?.care_path_ids || []).forEach(id => { counts[id] = (counts[id] || 0) + 1; }));
   list.innerHTML = state.carePaths.map(cp => `
     <div class="border border-slate-200 rounded-lg p-2.5 bg-slate-50/50" data-cp="${escapeHtml(cp.id)}">
       <div class="flex items-center gap-2">
@@ -1657,7 +2222,7 @@ function renderCarePathsPanel() {
     card.querySelector("[data-cp-delete]").addEventListener("click", () => {
       if (!confirm(`Delete care path "${cp.label}"? Trials currently assigned to it will become unassigned.`)) return;
       state.carePaths = state.carePaths.filter(c => c.id !== id);
-      (state.results || []).forEach(t => { if (t && t.care_path_id === id) t.care_path_id = ""; });
+      (state.results || []).forEach(t => { if (t && Array.isArray(t.care_path_ids)) t.care_path_ids = t.care_path_ids.filter(x => x !== id); });
       saveCarePaths();
       renderCarePathsPanel();
       trialItems.forEach((it, i) => { if (it.result) renderRow(it, i); });
@@ -1698,7 +2263,7 @@ function detectStageRange(text) {
   return null;
 }
 
-async function expandStagesForCriterion(criterion, stageMatch, host) {
+async function expandStagesForCriterion(criterion, stageMatch, host, trial) {
   if (!state.apiKey) {
     host.innerHTML = `<span class="text-[10px] text-rose-600">Save an OpenAI key in the header to expand stages.</span>`;
     return;
@@ -1732,6 +2297,7 @@ async function expandStagesForCriterion(criterion, stageMatch, host) {
       return;
     }
     criterion.stage_expansion = { system: parsed.system || stageMatch.system, values };
+    markTrialAI(trial, `openai/${state.model}`);
     host.innerHTML = `<span class="text-[10px] text-slate-500 font-semibold uppercase tracking-wider">${escapeHtml(parsed.system || stageMatch.system)}:</span>` +
       values.map(v => `<span class="badge bg-violet-50 text-violet-700 border border-violet-200">${escapeHtml(v.stage)}${v.tnm ? ` <span class="text-violet-400 font-normal">${escapeHtml(v.tnm)}</span>` : ""}</span>`).join("");
   } catch (e) {
@@ -1761,8 +2327,9 @@ function buildCriterionRow(trial, c, ci) {
 
   // Category label (informational pill, not an interactive control).
   const categoryNorm = (c.category || "").toLowerCase().trim();
-  const isOtherCategory = categoryNorm === "other" || !KNOWN_CATEGORIES.has(categoryNorm);
-  const categoryLabel = isOtherCategory ? "other" : (DOC_BY_ID[categoryNorm]?.short || categoryNorm);
+  const categoryDoc = docById(categoryNorm);
+  const isOtherCategory = categoryNorm === "other" || !categoryDoc;
+  const categoryLabel = isOtherCategory ? "other" : (categoryDoc.short || categoryNorm);
 
   // Guidance datalist for the 'other' textarea.
   const guidanceListId = `guidance-list-${trial.trial_id}-${c.criterion_id}`.replace(/[^a-z0-9_-]/gi, "_");
@@ -1838,12 +2405,13 @@ function buildCriterionRow(trial, c, ci) {
   // ---------- Render the routing chips ----------
   const routingHost = card.querySelector("[data-routing]");
   const otherGuidance = card.querySelector("[data-other-guidance]");
-  MATRIX_DOCS.forEach(d => {
+  matrixDocs().forEach(d => {
     const chip = document.createElement("button");
     chip.type = "button";
     chip.dataset.doc = d.id;
     routingHost.appendChild(chip);
     renderMatrixCell(chip, c, d, () => {
+      markTrialEdited(trial);
       if (d.id === "other") {
         otherGuidance.classList.toggle("hidden", !otherActiveNow());
         if (otherActiveNow()) {
@@ -1868,6 +2436,7 @@ function buildCriterionRow(trial, c, ci) {
         c.original_text = c.original_text_raw;
         delete c.original_text_raw;
         textEl.textContent = c.original_text;
+        markTrialEdited(trial);
         refreshOriginalLine();
       });
     }
@@ -1888,7 +2457,7 @@ function buildCriterionRow(trial, c, ci) {
       btn.className = "inline-flex items-center gap-1 text-[10px] font-semibold rounded-md bg-violet-50 text-violet-700 border border-violet-200 px-2 py-0.5 hover:bg-violet-100";
       btn.innerHTML = `<svg viewBox="0 0 24 24" class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14" stroke-linecap="round"/></svg> Expand ${escapeHtml(stageMatch.system)} stages`;
       btn.title = "Use the LLM to enumerate explicit stages with TNM-8 mappings.";
-      btn.addEventListener("click", () => expandStagesForCriterion(c, stageMatch, stageBar));
+      btn.addEventListener("click", () => expandStagesForCriterion(c, stageMatch, stageBar, trial));
       stageBar.appendChild(btn);
     }
     originalLine.after(stageBar);
@@ -1906,6 +2475,7 @@ function buildCriterionRow(trial, c, ci) {
   paintStatus();
   statusBtn.addEventListener("click", () => {
     c.status = c.status === "active" ? "inactive" : "active";
+    markTrialEdited(trial);
     paintStatus();
   });
 
@@ -1914,7 +2484,7 @@ function buildCriterionRow(trial, c, ci) {
   const dlist    = card.querySelector("[data-guidance-list]");
   if (guidance) {
     refreshGuidanceSuggestions(dlist, c);
-    guidance.addEventListener("input", () => { c.guidance = guidance.value; });
+    guidance.addEventListener("input", () => { c.guidance = guidance.value; markTrialEdited(trial); });
     guidance.addEventListener("blur", () => {
       const v = guidance.value.trim();
       if (v) recordGuidance(c.category, v);
@@ -1950,6 +2520,7 @@ function buildCriterionRow(trial, c, ci) {
         if (!c.original_text_raw) c.original_text_raw = c.original_text;
         c.original_text = newText;
         textEl.textContent = newText;
+        markTrialAI(trial, `openai/${state.model}`);
         refreshOriginalLine();
         clarifyStatus.textContent = "Rewritten ✓";
         clarifyStatus.className = "text-[10px] text-emerald-600";
@@ -2078,6 +2649,7 @@ function enableCriterionDrag(host, trial) {
       // Re-number both the data model and the visible rank badges so the
       // ranking is purely positional (1..N) after every drop.
       trial.criteria.forEach((c, i) => { c.priority_level = i + 1; });
+      markTrialEdited(trial);
       repaintRanks();
     });
   });
@@ -2106,7 +2678,7 @@ const TS_V1 = {
   DOC_TYPE_MAP: {
     intake_notes:      "intake-notes",
     referral_letters:  "referral-letters",
-    mdo_notes:         "mdo-notes",
+    mdt_notes:         "mdt-notes",
     pathology:         "pathology",
     imaging_radiology: "imaging",
     treatment_history: "treatment-history",
@@ -2118,7 +2690,7 @@ const TS_V1 = {
   DOC_TYPE_INVERSE: {
     "intake-notes":      "intake_notes",
     "referral-letters":  "referral_letters",
-    "mdo-notes":         "mdo_notes",
+    "mdt-notes":         "mdt_notes",
     "pathology":         "pathology",
     "imaging":           "imaging_radiology",
     "treatment-history": "treatment_history",
@@ -2169,7 +2741,7 @@ const TS_V1 = {
   DOMAIN_FOR_CATEGORY: {
     intake_notes:      "demographics",
     referral_letters:  "condition",
-    mdo_notes:         "procedure",
+    mdt_notes:         "procedure",
     pathology:         "observation",
     imaging_radiology: "observation",
     treatment_history: "medication",
@@ -2178,6 +2750,60 @@ const TS_V1 = {
     other:             "other",
   },
 };
+
+function tsv1WireDocId(id) {
+  const k = normalizeDocId(id);
+  return TS_V1.DOC_TYPE_MAP[k] || k.replace(/_/g, "-");
+}
+
+function tsv1InternalDocId(id) {
+  const s = String(id || "").trim().toLowerCase();
+  return TS_V1.DOC_TYPE_INVERSE[s] || normalizeDocId(s);
+}
+
+function tsv1RoutingProfile() {
+  const docs = matrixDocs().map((d, i) => ({
+    id: tsv1WireDocId(d.id),
+    label: String(d.label || ""),
+    hint: String(d.hint || ""),
+  }));
+  return {
+    id: tsv1WireDocId(state.routingProfile.id || "default_clinical"),
+    label: String(state.routingProfile.label || ""),
+    document_type_system: "https://trialschema.org/v1/document-types",
+    default_scan_set: defaultScanDocIds().map(tsv1WireDocId),
+    default_visit_order: docs.map(d => d.id),
+    document_types: docs,
+  };
+}
+
+function fromV1RoutingProfile(raw) {
+  const src = raw && typeof raw === "object" ? raw : {};
+  let docs = Array.isArray(src.document_types) ? src.document_types.map(d => ({
+    id: tsv1InternalDocId(d.id),
+    label: d.label,
+    short: d.short,
+    group: d.group,
+    hint: d.hint,
+    concept_domain: d.concept_domain,
+    rank: Number.isFinite(+d.rank) ? +d.rank : 999,
+  })) : cloneRoutingProfile(DEFAULT_ROUTING_PROFILE).document_types;
+  const order = Array.isArray(src.default_visit_order) ? src.default_visit_order.map(tsv1InternalDocId) : [];
+  if (order.length) {
+    docs.sort((a, b) => {
+      const ai = order.indexOf(a.id), bi = order.indexOf(b.id);
+      return (ai < 0 ? 999 : ai) - (bi < 0 ? 999 : bi);
+    });
+  } else {
+    docs.sort((a, b) => a.rank - b.rank);
+  }
+  return normalizeRoutingProfile({
+    id: tsv1InternalDocId(src.id || "default-clinical"),
+    label: src.label || "Imported routing profile",
+    document_types: docs,
+    default_scan_set: Array.isArray(src.default_scan_set) ? src.default_scan_set.map(tsv1InternalDocId) : undefined,
+  });
+}
 
 function tsv1NormalizePhase(p) {
   const k = String(p || "").trim().toLowerCase();
@@ -2255,8 +2881,9 @@ function tsv1Constraint(c) {
 }
 
 function tsv1Criterion(c, idx) {
+  const doc = docById(c.category);
   const concept = {
-    domain: TS_V1.DOMAIN_FOR_CATEGORY[c.category] || "other",
+    domain: doc?.concept_domain || TS_V1.DOMAIN_FOR_CATEGORY[c.category] || "other",
   };
   const code = tsv1ParseCode(c.structured_target?.standard_code);
   if (code) concept.code = tsv1Coding(code);
@@ -2273,8 +2900,8 @@ function tsv1Criterion(c, idx) {
     assertion: "present",
     constraint: tsv1Constraint(c),
     routing: {
-      primary:  (c.routing?.primary_docs  || []).map(d => TS_V1.DOC_TYPE_MAP[d]).filter(Boolean),
-      fallback: (c.routing?.fallback_docs || []).map(d => TS_V1.DOC_TYPE_MAP[d]).filter(Boolean),
+      primary:  (c.routing?.primary_docs  || []).map(d => coerceDocIdToProfile(d)).filter(Boolean).map(tsv1WireDocId),
+      fallback: (c.routing?.fallback_docs || []).map(d => coerceDocIdToProfile(d)).filter(Boolean).map(tsv1WireDocId),
     },
     guidance: typeof c.guidance === "string" ? c.guidance : "",
     provenance: {
@@ -2311,10 +2938,16 @@ function tsv1Trial(t) {
   }
   if (Object.keys(lifecycle).length) out.lifecycle = lifecycle;
 
+  // Normalized clinical-domain care-path assignment (multi-valued). Persisted
+  // so manual edits survive a re-import of a previous export.
+  const carePathIds = normalizeCarePathIds(t.care_path_ids);
+  if (carePathIds.length) out.care_path_ids = carePathIds;
+
   if (t.care_path && Array.isArray(t.care_path.phases) && t.care_path.phases.length) {
-    const cp = state.carePaths.find(p => p.id === t.care_path_id);
+    const primaryId = carePathIds[0] || "";
+    const cp = state.carePaths.find(p => p.id === primaryId);
     out.care_path = {
-      id:    t.care_path_id || "",
+      id:    primaryId,
       label: cp?.label || "",
       phases: t.care_path.phases.map((p, i) => ({
         id: `phase-${i + 1}`,
@@ -2326,6 +2959,17 @@ function tsv1Trial(t) {
   }
 
   out.criteria = (t.criteria || []).map((c, i) => tsv1Criterion(c, i));
+
+  // Trial-level provenance: which edits (AI / manual) the trial carries. Kept
+  // in the wire format so a re-import restores the badges and, crucially, lets
+  // the resume/merge flow know this trial already holds reviewed manual work.
+  const es = normalizeEditState(t.edit_state);
+  if (es.ai || es.manual) {
+    out.provenance = { ai_processed: es.ai, manually_edited: es.manual };
+    if (es.ai_at)     out.provenance.ai_at = es.ai_at;
+    if (es.ai_by)     out.provenance.ai_by = es.ai_by;
+    if (es.manual_at) out.provenance.edited_at = es.manual_at;
+  }
   return out;
 }
 
@@ -2335,9 +2979,21 @@ function toV1Envelope(trials) {
     format_version: TS_V1.VERSION,
     generated_at:   new Date().toISOString(),
     generator:      TS_V1.GENERATOR,
+    routing_profile: tsv1RoutingProfile(),
+    care_path_catalog: tsv1CarePathCatalog(),
     trial_count:    trials.length,
     trials:         trials.map(tsv1Trial),
   };
+}
+
+// The normalized care-path enum (id, label, aliases) active at export time.
+// Round-trips so re-importing restores the buckets and their aliases.
+function tsv1CarePathCatalog() {
+  return (state.carePaths || []).map(cp => ({
+    id: String(cp.id),
+    label: String(cp.label || cp.id),
+    aliases: Array.isArray(cp.aliases) ? cp.aliases.map(a => String(a).toLowerCase().trim()).filter(Boolean) : [],
+  }));
 }
 
 // Reverse transform: TrialSchema v1 envelope -> internal model. Used when the
@@ -2357,7 +3013,7 @@ function fromV1Trial(v) {
     },
   };
   const criteria = (v.criteria || []).map((c, i) => {
-    const cat = (c.routing?.primary || []).map(d => TS_V1.DOC_TYPE_INVERSE[d]).filter(Boolean)[0] || "other";
+    const cat = (c.routing?.primary || []).map(tsv1InternalDocId).map(coerceDocIdToProfile).filter(Boolean)[0] || "other";
     let st = null, evalType = "boolean";
     if (c.constraint?.kind === "comparison") {
       evalType = "quantitative";
@@ -2389,8 +3045,8 @@ function fromV1Trial(v) {
       priority_level: c.rank || (i + 1),
       status: c.enabled === false ? "inactive" : "active",
       routing: {
-        primary_docs:  (c.routing?.primary  || []).map(d => TS_V1.DOC_TYPE_INVERSE[d]).filter(Boolean),
-        fallback_docs: (c.routing?.fallback || []).map(d => TS_V1.DOC_TYPE_INVERSE[d]).filter(Boolean),
+        primary_docs:  (c.routing?.primary  || []).map(tsv1InternalDocId).map(coerceDocIdToProfile).filter(Boolean),
+        fallback_docs: (c.routing?.fallback || []).map(tsv1InternalDocId).map(coerceDocIdToProfile).filter(Boolean),
       },
       evaluation_type: evalType,
       structured_target: st,
@@ -2409,13 +3065,42 @@ function fromV1Trial(v) {
     active: v.enabled !== false,
     metadata: m,
     care_path: { phases: carePathPhases },
-    care_path_id: v.care_path?.id || "",
+    care_path_ids: Array.isArray(v.care_path_ids) ? v.care_path_ids : [],
     criteria,
+    edit_state: v.provenance ? {
+      ai: !!v.provenance.ai_processed,
+      manual: !!v.provenance.manually_edited,
+      ai_at: v.provenance.ai_at || "",
+      ai_by: v.provenance.ai_by || "",
+      manual_at: v.provenance.edited_at || "",
+    } : undefined,
   });
 }
 
 function fromV1Envelope(parsed) {
   if (!parsed || parsed.format !== TS_V1.FORMAT) return null;
+  state.routingProfile = fromV1RoutingProfile(parsed.routing_profile);
+  saveRoutingProfile();
+  renderRoutingProfileEditor();
+  // Restore the normalized care-path enum so manual assignments resolve and
+  // survive editing a previously exported file.
+  if (Array.isArray(parsed.care_path_catalog) && parsed.care_path_catalog.length) {
+    const byId = Object.fromEntries(state.carePaths.map(c => [c.id, c]));
+    parsed.care_path_catalog.forEach(cp => {
+      const id = String(cp.id || slugifyCarePath(cp.label || "")).toLowerCase();
+      if (!id) return;
+      const label = String(cp.label || id);
+      const aliases = Array.isArray(cp.aliases) ? cp.aliases.map(a => String(a).toLowerCase().trim()).filter(Boolean) : [];
+      if (byId[id]) {
+        byId[id].aliases = [...new Set([...(byId[id].aliases || []), ...aliases])];
+      } else {
+        byId[id] = { id, label, aliases };
+      }
+    });
+    state.carePaths = Object.values(byId);
+    saveCarePaths();
+    renderCarePathsPanel();
+  }
   const trials = Array.isArray(parsed.trials) ? parsed.trials.map(fromV1Trial) : [];
   return { trials };
 }
@@ -2469,11 +3154,14 @@ function bindFilters() {
 
 document.addEventListener("DOMContentLoaded", () => {
   loadApiKey();
+  loadRoutingProfile();
   loadCarePaths();
   bindManualUploads();
   bindFilters();
   bindSourceInfoModal();
+  bindRoutingProfileControls();
   bindCarePathControls();
+  renderRoutingProfileEditor();
   renderCarePathsPanel();
 
   document.getElementById("saveKeyBtn").addEventListener("click", saveApiKey);
