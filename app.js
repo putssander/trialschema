@@ -7,7 +7,7 @@
  *   1.  Constants & state
  *   2.  API key handling (localStorage)
  *   3.  /ingestion/ folder discovery + manual file uploads
- *   4.  Source parsers (TrialGPT, Org JSON, Dutch Excel/CSV via SheetJS)
+ *   4.  Source parsers (TrialGPT, Org JSON, spreadsheet Excel/CSV via SheetJS)
  *   5.  Delta diffing (existing TrialSchema export merge)
  *   6.  OpenAI request (system prompt enforcing all extraction rules)
  *   7.  Throttled queue runner
@@ -186,6 +186,7 @@ function inferBestProfileDoc(criterion) {
 
 // Recruitment status normalization targets (Rule 4).
 const RECRUITMENT_STATES = [
+  "Unknown",
   "Not yet recruiting",
   "Recruiting",
   "Active, not recruiting",
@@ -206,6 +207,7 @@ const state = {
   rawRows: [],          // normalized raw rows (pre-LLM)
   results: [],          // final structured trials (in display order)
   resultsById: {},      // map: trial_id -> structured trial
+  processMode: "single",
   running: false,
   abort: false,
   carePaths: [],        // normalized clinical-domain enum [{id, label, aliases[]}]
@@ -232,6 +234,7 @@ const FALLBACK_MODELS = [
 
 async function loadModels() {
   const sel = document.getElementById("modelSelect");
+  const status = document.getElementById("keyStatus");
   const savedModel = state.model;
 
   // Filter to RECENT, chat-completion-capable models. Exclude non-chat or
@@ -243,6 +246,11 @@ async function loadModels() {
   const cutoffEpoch = Math.floor(Date.now() / 1000) - RECENCY_CUTOFF_DAYS * 86400;
 
   let models = [];
+  let keyState = state.apiKey ? "checking" : "empty";
+  if (status) {
+    status.textContent = state.apiKey ? "checking..." : "manual mode";
+    status.className = `text-[11px] ${state.apiKey ? "text-slate-500" : "text-slate-400"}`;
+  }
 
   if (state.apiKey) {
     try {
@@ -250,6 +258,7 @@ async function loadModels() {
         headers: { "Authorization": `Bearer ${state.apiKey}` },
       });
       if (res.ok) {
+        keyState = "verified";
         const json = await res.json();
         models = (json.data || [])
           // Keep chat-style families only (gpt-* and o-series reasoning models).
@@ -269,8 +278,10 @@ async function loadModels() {
             return b.id.localeCompare(a.id);
           })
           .map(m => m.id);
+      } else {
+        keyState = "invalid";
       }
-    } catch (_) { /* fall through to fallback */ }
+    } catch (_) { keyState = "network"; }
   }
 
   if (!models.length) models = FALLBACK_MODELS.slice();
@@ -289,6 +300,22 @@ async function loadModels() {
 
   // If saved model still present in list, re-select it.
   if (models.includes(savedModel)) sel.value = savedModel;
+  if (status) {
+    if (!state.apiKey) {
+      status.textContent = "manual mode";
+      status.className = "text-[11px] text-slate-400";
+    } else if (keyState === "verified") {
+      status.textContent = `verified · ${models.length} models`;
+      status.className = "text-[11px] text-emerald-600";
+    } else if (keyState === "invalid") {
+      status.textContent = "invalid key";
+      status.className = "text-[11px] text-rose-600";
+    } else {
+      status.textContent = "saved · check unavailable";
+      status.className = "text-[11px] text-amber-600";
+    }
+  }
+  updateApiKeyDependentUi();
 }
 
 function loadApiKey() {
@@ -298,8 +325,8 @@ function loadApiKey() {
   const status = document.getElementById("keyStatus");
   if (state.apiKey) {
     input.value = state.apiKey;
-    status.textContent = "saved";
-    status.className = "text-[11px] text-emerald-600";
+    status.textContent = "checking...";
+    status.className = "text-[11px] text-slate-500";
   }
   loadModels();
 }
@@ -309,10 +336,18 @@ function saveApiKey() {
   state.apiKey = v;
   localStorage.setItem(KEY_STORAGE, v);
   const status = document.getElementById("keyStatus");
-  status.textContent = v ? "saved" : "cleared";
-  status.className = `text-[11px] ${v ? "text-emerald-600" : "text-slate-500"}`;
+  status.textContent = v ? "checking..." : "manual mode";
+  status.className = `text-[11px] ${v ? "text-slate-500" : "text-slate-400"}`;
+  updateApiKeyDependentUi();
   // Refresh model list now that we have (or lost) a key.
   loadModels();
+  trialItems.forEach((it, i) => renderRow(it, i));
+  updateProcessButtonLabel();
+}
+
+function updateApiKeyDependentUi() {
+  const hasKey = !!state.apiKey;
+  document.getElementById("manualModeHint")?.classList.toggle("hidden", hasKey);
 }
 
 
@@ -344,11 +379,173 @@ function setCtgovRunHint(message) {
   el.innerHTML = message;
 }
 
+function showCtgovSourcePanel() {
+  const panel = document.getElementById("ctgovSourcePanel");
+  const toggle = document.getElementById("ctgovSourceToggle");
+  if (panel) panel.classList.remove("hidden");
+  if (toggle) toggle.classList.add("ring-2", "ring-cyan-200", "bg-cyan-50");
+}
+
+const SPREADSHEET_REQUIRED_GROUPS = [
+  { label: "trial", aliases: ["trial"] },
+  { label: "inclusion or exclusion", aliases: ["inclusion", "exclusion"] },
+];
+const SPREADSHEET_OPTIONAL_COLUMNS = [
+  "trial_id",
+  "care_path",
+  "active",
+  "status",
+  "condition",
+  "phase",
+  "study_type",
+  "indication",
+  "start_date",
+  "primary_completion_date",
+  "completion_date",
+];
+const SPREADSHEET_COLUMN_ALIASES = {
+  trial_id: ["trial_id"],
+  trial: ["trial"],
+  care_path: ["care_path"],
+  inclusion: ["inclusion"],
+  exclusion: ["exclusion"],
+  active: ["active"],
+  status: ["status"],
+  condition: ["condition"],
+  phase: ["phase"],
+  study_type: ["study_type"],
+  indication: ["indication"],
+  start_date: ["start_date"],
+  primary_completion_date: ["primary_completion_date"],
+  completion_date: ["completion_date"],
+};
+
+function normalizeHeaderName(name) {
+  return String(name || "").trim().toLowerCase();
+}
+
+function spreadsheetHeaderMap(headers) {
+  const normalized = Object.fromEntries(headers.map(h => [normalizeHeaderName(h), h]));
+  const map = {};
+  Object.entries(SPREADSHEET_COLUMN_ALIASES).forEach(([canonical, aliases]) => {
+    for (const alias of aliases) {
+      const key = normalizeHeaderName(alias);
+      if (normalized[key]) { map[canonical] = normalized[key]; break; }
+    }
+  });
+  return map;
+}
+
+function spreadsheetMissingGroups(headers) {
+  const keys = new Set(headers.map(normalizeHeaderName));
+  return SPREADSHEET_REQUIRED_GROUPS
+    .filter(group => !group.aliases.some(alias => keys.has(normalizeHeaderName(alias))))
+    .map(group => group.label);
+}
+
+function spreadsheetCellString(value) {
+  return value === null || value === undefined ? "" : String(value).trim();
+}
+
+function normalizeSpreadsheetRow(row) {
+  const headers = Object.keys(row || {});
+  const map = spreadsheetHeaderMap(headers);
+  const get = key => map[key] ? row[map[key]] : "";
+  return {
+    trial_id: spreadsheetCellString(get("trial_id")),
+    trial: spreadsheetCellString(get("trial")),
+    care_path: spreadsheetCellString(get("care_path")),
+    inclusion: spreadsheetCellString(get("inclusion")),
+    exclusion: spreadsheetCellString(get("exclusion")),
+    active: spreadsheetCellString(get("active")),
+    status: spreadsheetCellString(get("status")),
+    condition: spreadsheetCellString(get("condition")),
+    phase: spreadsheetCellString(get("phase")),
+    study_type: spreadsheetCellString(get("study_type")),
+    indication: spreadsheetCellString(get("indication")),
+    start_date: spreadsheetCellString(get("start_date")),
+    primary_completion_date: spreadsheetCellString(get("primary_completion_date")),
+    completion_date: spreadsheetCellString(get("completion_date")),
+    _original_columns: row,
+  };
+}
+
+function parseSpreadsheetActive(value) {
+  const s = String(value ?? "").trim().toLowerCase();
+  if (!s) return null;
+  if (["false", "no", "n", "0", "inactive", "inactief", "inactve", "inactvei", "disabled"].includes(s)) return false;
+  if (["true", "yes", "y", "1", "active", "enabled"].includes(s)) return true;
+  return null;
+}
+
+function parseSpreadsheetStatus(value) {
+  const s = String(value ?? "").trim().toLowerCase();
+  if (!s) return "";
+  if (["not yet recruiting", "not-yet-recruiting", "planned", "pending"].includes(s)) return "Not yet recruiting";
+  if (["active", "recruiting", "open", "open to accrual", "enrolling", "enrolling by invitation"].includes(s)) return "Recruiting";
+  if (["active not recruiting", "active, not recruiting", "active-not-recruiting"].includes(s)) return "Active, not recruiting";
+  if (["inactive", "inactief", "inactve", "inactvei", "not active", "non-active", "non active"].includes(s)) return "Not yet recruiting";
+  if (["completed", "complete", "closed", "closed to accrual", "terminated", "withdrawn"].includes(s)) return "Completed";
+  return "Unknown";
+}
+
+function normalizeRecruitmentStatus(value) {
+  const raw = String(value ?? "").trim();
+  if (RECRUITMENT_STATES.includes(raw)) return raw;
+  const s = raw.toLowerCase().replace(/_/g, "-");
+  if (["unknown", "n/a", "na", "not available"].includes(s)) return "Unknown";
+  if (["not-yet-recruiting"].includes(s)) return "Not yet recruiting";
+  if (["recruiting", "enrolling-by-invitation"].includes(s)) return "Recruiting";
+  if (["active"].includes(s)) return "Recruiting";
+  if (["active-not-recruiting"].includes(s)) return "Active, not recruiting";
+  if (["inactive", "inactief", "not-active", "non-active"].includes(s)) return "Not yet recruiting";
+  if (["completed", "terminated", "withdrawn", "closed"].includes(s)) return "Completed";
+  return parseSpreadsheetStatus(raw) || "Unknown";
+}
+
+function inferActiveFromSpreadsheetStatus(value) {
+  const s = String(value ?? "").trim().toLowerCase();
+  if (!s) return null;
+  if ([
+    "inactive", "inactief", "inactve", "inactvei", "not active", "non-active", "non active",
+    "disabled", "false", "no", "n", "0",
+    "not yet recruiting", "not-yet-recruiting", "planned", "pending",
+    "completed", "complete", "closed", "closed to accrual", "terminated", "withdrawn",
+  ].includes(s)) return false;
+  if ([
+    "active", "enabled", "true", "yes", "y", "1",
+    "recruiting", "open", "open to accrual", "enrolling", "enrolling by invitation",
+    "active not recruiting", "active, not recruiting", "active-not-recruiting",
+  ].includes(s)) return true;
+  const status = parseSpreadsheetStatus(s);
+  if (!status || status === "Unknown") return null;
+  return status === "Completed" ? false : true;
+}
+
+function spreadsheetActiveState(row) {
+  const explicit = parseSpreadsheetActive(row?.active);
+  const fromStatus = inferActiveFromSpreadsheetStatus(row?.status);
+  // Any clear inactive/closed signal wins, so a status column saying inactive
+  // cannot be displayed as Active because another optional flag was true/stale.
+  if (explicit === false || fromStatus === false) return false;
+  if (explicit === true || fromStatus === true) return true;
+  return null;
+}
+
+function spreadsheetFormatHelpHtml() {
+  return [
+    `Required: <code>trial</code> and at least one of <code>inclusion</code> / <code>exclusion</code>.`,
+    `Optional: <code>${SPREADSHEET_OPTIONAL_COLUMNS.join("</code>, <code>")}</code>.`,
+    `Use exact English column names from the template.`,
+  ].join(" ");
+}
+
 // Detect the source format from a sample row + filename.
 function detectFormat(filename, sampleRow) {
   const ext = (filename || "").toLowerCase().split(".").pop();
-  if (ext === "xlsx" || ext === "xls" || ext === "csv") return "dutch";
+  if (ext === "xlsx" || ext === "xls" || ext === "csv") return "spreadsheet";
   const r = sampleRow || {};
+  if (r.format === TS_V1.FORMAT || (r.kind === "trial" && "enabled" in r && "criteria" in r)) return "trialschema";
   // ClinicalTrials.gov API v2 study record (or top-level wrapper unwrapped already).
   if (r.protocolSection && (r.protocolSection.identificationModule || r.protocolSection.eligibilityModule)) return "ctgov";
   if ("_id" in r || (r.metadata && ("inclusion_criteria" in r.metadata || "brief_title" in r.metadata))) return "trialgpt";
@@ -365,6 +562,7 @@ function bindManualUploads() {
     state.newFile = f;
     document.getElementById("newFileName").textContent = `${f.name} (${formatBytes(f.size)})`;
     await previewAndDetectFormat(f);
+    clearPreparedTrials();
   });
 
   const exIn = document.getElementById("existingFileInput");
@@ -388,7 +586,8 @@ function bindManualUploads() {
         if (t && t.trial_id) state.existingById[t.trial_id] = t;
       }
       document.getElementById("existingStats").textContent =
-        `Loaded ${trials.length} prior trials — these will be reused verbatim if their IDs reappear.`;
+        `Loaded ${trials.length} reviewed trial${trials.length === 1 ? "" : "s"} — continue this export alone, or reuse matching edits with a new upload.`;
+      clearPreparedTrials("Previous export loaded. Load rows to continue it alone or combine it with a new source.");
     } catch (err) {
       document.getElementById("existingStats").textContent = `Error parsing JSON: ${err.message}`;
     }
@@ -411,6 +610,7 @@ function bindManualUploads() {
       el.innerHTML = html;
     };
     const fillCtgovInput = (value) => {
+      showCtgovSourcePanel();
       ctgovInput.value = value;
       ctgovInput.focus();
       ctgovInput.setSelectionRange(ctgovInput.value.length, ctgovInput.value.length);
@@ -418,6 +618,7 @@ function bindManualUploads() {
       setStatus("warn", `Example loaded into the field. Click <strong>Load</strong> when ready.`);
     };
     const trigger = async () => {
+      showCtgovSourcePanel();
       const raw = (ctgovInput.value || "").trim();
       if (!raw) { setCtgovRunHint(""); setStatus("warn", "Enter an NCT id, e.g. <code>NCT00995306</code>."); return; }
       const ids = raw.split(/[\s,;]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
@@ -443,8 +644,9 @@ function bindManualUploads() {
         state.newFile = file;
         document.getElementById("newFileName").textContent = `${file.name} (${formatBytes(file.size)})`;
         await previewAndDetectFormat(file);
+        clearPreparedTrials("CT.gov source ready. Load trial rows to review before processing.");
         setStatus("ok", `Loaded ${ids.length} stud${ids.length === 1 ? "y" : "ies"} from ClinicalTrials.gov.`);
-        setCtgovRunHint(`CT.gov source ready: <strong>${ids.join(", ")}</strong>. Use <strong>Run Structured Extraction</strong> above to convert it into TrialSchema.`);
+        setCtgovRunHint(`CT.gov source ready: <strong>${ids.join(", ")}</strong>. Use <strong>Load Trial Rows</strong> above to review before processing.`);
       } catch (err) {
         setCtgovRunHint("");
         setStatus("error", `Fetch failed: ${err.message}`);
@@ -474,14 +676,13 @@ async function previewAndDetectFormat(f) {
       const ws = wb.Sheets[wb.SheetNames[0]];
       const json = XLSX.utils.sheet_to_json(ws, { defval: "" });
       if (!json.length) { setFormatBanner("warn", "Excel sheet appears empty."); return; }
-      state.format = "dutch";
+      state.format = "spreadsheet";
       const headers = Object.keys(json[0]);
-      const expected = ["Naam studie", "inclusion_criteria", "exclusion_criteria"];
-      const missing = expected.filter(h => !headers.includes(h));
+      const missing = spreadsheetMissingGroups(headers);
       if (missing.length) {
-        setFormatBanner("warn", `Detected <strong>Excel/CSV</strong> with ${json.length} rows, but missing columns: <code>${missing.join(", ")}</code>. Use the template for the expected layout.`);
+        setFormatBanner("warn", `Detected <strong>Excel</strong> with ${json.length} rows, but missing: <code>${missing.join(", ")}</code>. ${spreadsheetFormatHelpHtml()}`);
       } else {
-        setFormatBanner("ok", `Detected <strong>Excel</strong> &middot; ${json.length} trial rows.`);
+        setFormatBanner("ok", `Detected <strong>Excel</strong> &middot; ${json.length} trial rows. ${spreadsheetFormatHelpHtml()}`);
       }
       return;
     }
@@ -490,8 +691,13 @@ async function previewAndDetectFormat(f) {
       const wb = XLSX.read(text, { type: "string" });
       const ws = wb.Sheets[wb.SheetNames[0]];
       const json = XLSX.utils.sheet_to_json(ws, { defval: "" });
-      state.format = "dutch";
-      setFormatBanner("ok", `Detected <strong>CSV</strong> &middot; ${json.length} rows.`);
+      state.format = "spreadsheet";
+      const missing = json.length ? spreadsheetMissingGroups(Object.keys(json[0])) : ["trial", "inclusion or exclusion"];
+      if (missing.length) {
+        setFormatBanner("warn", `Detected <strong>CSV</strong> with ${json.length} rows, but missing: <code>${missing.join(", ")}</code>. ${spreadsheetFormatHelpHtml()}`);
+      } else {
+        setFormatBanner("ok", `Detected <strong>CSV</strong> &middot; ${json.length} rows. ${spreadsheetFormatHelpHtml()}`);
+      }
       return;
     }
     if (ext === "jsonl") {
@@ -510,6 +716,12 @@ async function previewAndDetectFormat(f) {
       let parsed;
       try { parsed = JSON.parse(text); }
       catch (e) { setFormatBanner("error", `Invalid JSON: ${e.message}`); return; }
+      if (parsed && parsed.format === TS_V1.FORMAT) {
+        const count = Array.isArray(parsed.trials) ? parsed.trials.length : 0;
+        state.format = "trialschema";
+        setFormatBanner("ok", `Detected <strong>TrialSchema export</strong> &middot; ${count} processed trial${count === 1 ? "" : "s"}.`);
+        return;
+      }
       // Unwrap CT.gov v2 envelopes: { studies: [...] } or { studies: [{ ... }] } or a single study.
       let arr;
       if (Array.isArray(parsed)) arr = parsed;
@@ -520,6 +732,7 @@ async function previewAndDetectFormat(f) {
       state.format = detectFormat(f.name, arr[0]);
       const label = state.format === "trialgpt" ? "TrialGPT JSON"
                   : state.format === "ctgov"    ? "ClinicalTrials.gov v2 JSON"
+                  : state.format === "trialschema" ? "TrialSchema JSON"
                   :                                "Org-specific JSON";
       setFormatBanner("ok", `Detected <strong>${label}</strong> &middot; ${arr.length} rows.`);
       return;
@@ -539,19 +752,42 @@ function formatBytes(n) {
 /* =========================== TEMPLATES =========================== */
 
 const TEMPLATE_HEADERS = [
-  "Naam studie", "Status", "Tumorgroep", "CTC", "Type studie",
-  "Indicatie", "inclusion_criteria", "exclusion_criteria",
+  "trial_id", "trial", "care_path", "inclusion", "exclusion",
+  "active", "status", "condition", "phase", "study_type", "indication",
+  "start_date", "primary_completion_date", "completion_date",
 ];
 const TEMPLATE_EXAMPLE_ROW = {
-  "Naam studie": "EXAMPLE-01 – Replace this row with your trial",
-  "Status": "Recruiting",
-  "Tumorgroep": "Borstkanker",
-  "CTC": "",
-  "Type studie": "Interventie",
-  "Indicatie": "Locally advanced disease",
-  "inclusion_criteria": "Histologically confirmed disease\nAge ≥ 18 years\nECOG 0-2",
-  "exclusion_criteria": "Distant metastases\nPregnancy or lactation",
+  trial_id: "EXAMPLE-01",
+  trial: "Replace this row with your trial title",
+  care_path: "breast_cancer",
+  inclusion: "Histologically confirmed disease\nAge >= 18 years\nECOG 0-2",
+  exclusion: "Distant metastases\nPregnancy or lactation",
+  active: "true",
+  status: "Recruiting",
+  condition: "Breast cancer",
+  phase: "Phase 2",
+  study_type: "Interventional",
+  indication: "Locally advanced disease",
+  start_date: "",
+  primary_completion_date: "",
+  completion_date: "",
 };
+const TEMPLATE_COLUMN_GUIDE = [
+  { column: "trial", required: "yes", description: "Trial title or short name." },
+  { column: "inclusion", required: "one of inclusion/exclusion", description: "Inclusion criteria. Put one criterion per line when possible." },
+  { column: "exclusion", required: "one of inclusion/exclusion", description: "Exclusion criteria. Put one criterion per line when possible." },
+  { column: "trial_id", required: "no", description: "Stable id such as NCT id or local study id." },
+  { column: "care_path", required: "no", description: "Clinical-domain bucket or comma-separated buckets, e.g. breast_cancer." },
+  { column: "active", required: "no", description: "true/false, yes/no, 1/0. true means Recruiting; false means Not yet recruiting." },
+  { column: "status", required: "no", description: "Recruitment status if known. Bare active means Recruiting; inactive means Not yet recruiting." },
+  { column: "condition", required: "no", description: "Disease, tumor group, or condition." },
+  { column: "phase", required: "no", description: "Trial phase." },
+  { column: "study_type", required: "no", description: "Interventional, observational, registry, etc." },
+  { column: "indication", required: "no", description: "Specific indication or setting." },
+  { column: "start_date", required: "no", description: "YYYY-MM-DD. Leave blank if unknown." },
+  { column: "primary_completion_date", required: "no", description: "YYYY-MM-DD. Leave blank if unknown." },
+  { column: "completion_date", required: "no", description: "YYYY-MM-DD. Leave blank if unknown." },
+];
 
 function downloadTemplate(kind) {
   if (kind === "xlsx" || kind === "csv") {
@@ -559,6 +795,8 @@ function downloadTemplate(kind) {
     if (kind === "xlsx") {
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, "Trials");
+      const guide = XLSX.utils.json_to_sheet(TEMPLATE_COLUMN_GUIDE, { header: ["column", "required", "description"] });
+      XLSX.utils.book_append_sheet(wb, guide, "Column guide");
       XLSX.writeFile(wb, "trialschema_template.xlsx");
     } else {
       const csv = XLSX.utils.sheet_to_csv(ws);
@@ -598,7 +836,10 @@ function triggerDownload(content, name, type) {
 // Read raw rows from the manually uploaded source file.
 async function gatherRawRows() {
   const rows = [];
-  if (!state.newFile) return rows;
+  if (!state.newFile) {
+    const prior = state.existingExport?.trials || [];
+    return prior.map(t => ({ __raw: t, __sourceFormat: "trialschema", __structuredTrial: t }));
+  }
   const f = state.newFile;
   const ext = f.name.toLowerCase().split(".").pop();
   if (ext === "xlsx" || ext === "xls") {
@@ -606,13 +847,13 @@ async function gatherRawRows() {
     const wb = XLSX.read(buf, { type: "array" });
     const ws = wb.Sheets[wb.SheetNames[0]];
     const json = XLSX.utils.sheet_to_json(ws, { defval: "" });
-    json.forEach(r => rows.push({ __raw: r, __sourceFormat: "dutch" }));
+    json.forEach(r => rows.push({ __raw: normalizeSpreadsheetRow(r), __sourceFormat: "spreadsheet" }));
   } else if (ext === "csv") {
     const text = await f.text();
     const wb = XLSX.read(text, { type: "string" });
     const ws = wb.Sheets[wb.SheetNames[0]];
     const json = XLSX.utils.sheet_to_json(ws, { defval: "" });
-    json.forEach(r => rows.push({ __raw: r, __sourceFormat: "dutch" }));
+    json.forEach(r => rows.push({ __raw: normalizeSpreadsheetRow(r), __sourceFormat: "spreadsheet" }));
   } else {
     const text = await f.text();
     rows.push(...parseTextByExt(f.name, text));
@@ -631,11 +872,18 @@ function parseTextByExt(name, text) {
   if (ext === "json") {
     try {
       const j = JSON.parse(text);
+      if (j && j.format === TS_V1.FORMAT) {
+        const env = fromV1Envelope(j);
+        return (env?.trials || []).map(t => ({ __raw: t, __sourceFormat: "trialschema", __structuredTrial: t }));
+      }
       let arr;
       if (Array.isArray(j)) arr = j;
       else if (Array.isArray(j.studies)) arr = j.studies;
       else if (j.protocolSection) arr = [j];
       else arr = j.trials || j.data || [];
+      if (arr.length && arr[0]?.kind === "trial" && "enabled" in arr[0]) {
+        return arr.map(fromV1Trial).map(t => ({ __raw: t, __sourceFormat: "trialschema", __structuredTrial: t }));
+      }
       return arr.map(wrapRaw);
     } catch { return []; }
   }
@@ -643,7 +891,7 @@ function parseTextByExt(name, text) {
     const wb = XLSX.read(text, { type: "string" });
     const ws = wb.Sheets[wb.SheetNames[0]];
     return XLSX.utils.sheet_to_json(ws, { defval: "" })
-      .map(r => ({ __raw: r, __sourceFormat: "dutch" }));
+      .map(r => ({ __raw: normalizeSpreadsheetRow(r), __sourceFormat: "spreadsheet" }));
   }
   return [];
 }
@@ -654,12 +902,12 @@ function wrapRaw(obj) {
 
 // Pull the "best guess" trial id and brief title for display before LLM runs.
 function previewIdAndTitle(raw) {
-  if (state.format === "dutch") {
+  if (state.format === "spreadsheet" || raw.__sourceFormat === "spreadsheet") {
     const r = raw.__raw || {};
     return {
-      id: r["StudieID"] || r["Study ID"] || r["NCT"] || r["Naam studie"] || cryptoSlug(JSON.stringify(r).slice(0, 80)),
-      title: r["Naam studie"] || r["Title"] || "(Dutch trial)",
-      meta: [r["Tumorgroep"], r["Indicatie"], r["Status"]].filter(Boolean).join(" • "),
+      id: r.trial_id || r.trial || cryptoSlug(JSON.stringify(r).slice(0, 80)),
+      title: r.trial || "(Untitled trial)",
+      meta: [r.condition, r.indication, r.status].filter(Boolean).join(" • "),
     };
   }
   if (state.format === "ctgov" || raw.__sourceFormat === "ctgov") {
@@ -699,7 +947,18 @@ function cryptoSlug(s) {
 function classifyRows(rawRows) {
   return rawRows.map((row, i) => {
     const { id, title, meta } = previewIdAndTitle(row);
-    const reused = state.existingById[id];
+    const direct = row.__structuredTrial
+      ? sanitizeTrial(JSON.parse(JSON.stringify(row.__structuredTrial)))
+      : null;
+    const reused = direct || (state.existingById[id]
+      ? applySpreadsheetSourceFields(sanitizeTrial(JSON.parse(JSON.stringify(state.existingById[id]))), row)
+      : null);
+    const activeHint = row.__sourceFormat === "spreadsheet"
+      ? spreadsheetActiveState(row.__raw)
+      : null;
+    const recruitmentHint = row.__sourceFormat === "spreadsheet"
+      ? normalizeRecruitmentStatus(row.__raw?.status) || ""
+      : "";
     return {
       idx: i,
       preview: { id, title, meta },
@@ -707,6 +966,8 @@ function classifyRows(rawRows) {
       status: reused ? "reused" : "pending",
       result: reused || null,
       error: null,
+      userActive: activeHint === false ? false : undefined,
+      userRecruitmentStatus: recruitmentHint !== "Unknown" ? recruitmentHint : (activeHint === false ? "Not yet recruiting" : activeHint === true ? "Recruiting" : undefined),
     };
   });
 }
@@ -790,15 +1051,15 @@ The downstream matching agent must be able to execute mathematical evaluation
 WITHOUT re-reading the original_text.
 
 RULE 3 - CROSS-LINGUAL TRANSLATION & STANDARDIZATION.
-If the input is Dutch (e.g. "Tumorgroep: Borstkanker", "Indicatie: Gemetastaseerd",
-"Status: Werving") or any other non-English language, interpret it natively but translate
+If the input contains any non-English clinical text, interpret it natively but translate
 ALL output strings (criteria text, diseases, phase, status, descriptions) cleanly into
 English. Preserve clinical precision.
 
 RULE 4 - OPERATIONAL STATUS & ISO DATE NORMALIZATION.
 metadata.recruitment_status MUST be exactly one of:
-  "Not yet recruiting", "Recruiting", "Active, not recruiting", "Completed".
-All lifecycle dates must be "YYYY-MM-DD" strings (or "" if unknown).
+  "Unknown", "Not yet recruiting", "Recruiting", "Active, not recruiting", "Completed".
+Use "Unknown" when no source status is provided. All lifecycle dates must be
+"YYYY-MM-DD" strings or "" if unknown; never invent dates.
 
 RULE 5 - CRITERION CATEGORY (CLOSED VOCABULARY).
 The "category" field on every criterion MUST be exactly ONE of these lower-case tokens:
@@ -832,17 +1093,18 @@ ${carePathPromptBlock()}`
 OUTPUT SHAPE - return EXACTLY this JSON structure (no extra keys, no commentary):
 {
   "trial_id": "string",
+  "active": true,
   "metadata": {
     "brief_title": "string",
     "phase": "string",
     "drugs": ["string"],
     "diseases": ["string"],
     "enrollment_target": 0,
-    "recruitment_status": "Recruiting",
+    "recruitment_status": "Unknown",
     "lifecycle_dates": {
-      "start_date": "YYYY-MM-DD",
-      "primary_completion_date": "YYYY-MM-DD",
-      "actual_close_date": "YYYY-MM-DD"
+      "start_date": "",
+      "primary_completion_date": "",
+      "actual_close_date": ""
     }
   },
   "care_path_ids": [],
@@ -887,10 +1149,18 @@ Return ONLY the JSON object - no markdown fences, no explanations.`;
 // Build the per-trial user prompt depending on the source format.
 function buildUserPrompt(raw) {
   const sf = raw.__sourceFormat;
-  if (sf === "dutch") {
+  if (sf === "spreadsheet") {
     return [
-      "SOURCE FORMAT: Dutch Excel/CSV row. Translate output to English.",
-      "Raw row:",
+      "SOURCE FORMAT: English spreadsheet row.",
+      "Minimum expected fields are `trial` plus at least one of `inclusion` or `exclusion`.",
+      "Optional fields include `trial_id`, `care_path`, `active`, `status`, `condition`, `phase`, `study_type`, `indication`, `start_date`, `primary_completion_date`, and `completion_date`.",
+      "Use `trial_id` when present; otherwise derive trial_id from `trial`.",
+      "Use `active` as the trial-level recruitment toggle. true/active means `Recruiting`; false/inactive means `Not yet recruiting`.",
+      "Use `status` for recruitment_status. Bare `active` means `Recruiting`; bare `inactive` means `Not yet recruiting` and should set the trial-level active flag to false.",
+      "Use date fields only when provided; leave missing dates as empty strings.",
+      "If `care_path` is present, use it as a strong hint for care_path_ids.",
+      "Parse one Criterion per line/bullet from `inclusion` and `exclusion`.",
+      "Normalized row:",
       "```json",
       JSON.stringify(raw.__raw, null, 2),
       "```",
@@ -1053,6 +1323,30 @@ async function callOpenAI(raw) {
   return sanitizeTrial(parsed);
 }
 
+function applySpreadsheetSourceFields(trial, raw) {
+  if (!trial || raw?.__sourceFormat !== "spreadsheet") return trial;
+  const row = raw.__raw || {};
+  trial.metadata = trial.metadata || {};
+  const m = trial.metadata;
+  if (!m.brief_title && row.trial) m.brief_title = row.trial;
+  if (row.phase) m.phase = row.phase;
+  const condition = [row.condition, row.indication].map(s => String(s || "").trim()).filter(Boolean);
+  if (condition.length && !(m.diseases || []).length) m.diseases = condition;
+
+  const active = spreadsheetActiveState(row);
+  const statusFromSource = normalizeRecruitmentStatus(row.status);
+  m.recruitment_status = statusFromSource !== "Unknown"
+    ? statusFromSource
+    : (active === true ? "Recruiting" : active === false ? "Not yet recruiting" : "Unknown");
+  m.lifecycle_dates = m.lifecycle_dates || {};
+  m.lifecycle_dates.start_date = isoDate(row.start_date);
+  m.lifecycle_dates.primary_completion_date = isoDate(row.primary_completion_date);
+  m.lifecycle_dates.actual_close_date = isoDate(row.completion_date);
+
+  if (active !== null) trial.active = active;
+  return trial;
+}
+
 // Normalize/repair LLM output so the rest of the app can rely on shape.
 function sanitizeTrial(t) {
   if (!t || typeof t !== "object") t = {};
@@ -1064,8 +1358,7 @@ function sanitizeTrial(t) {
   m.drugs = Array.isArray(m.drugs) ? m.drugs.map(String) : [];
   m.diseases = Array.isArray(m.diseases) ? m.diseases.map(String) : [];
   m.enrollment_target = Number.isFinite(+m.enrollment_target) ? +m.enrollment_target : 0;
-  m.recruitment_status = RECRUITMENT_STATES.includes(m.recruitment_status)
-    ? m.recruitment_status : "Recruiting";
+  m.recruitment_status = normalizeRecruitmentStatus(m.recruitment_status);
   m.lifecycle_dates = m.lifecycle_dates || {};
   ["start_date", "primary_completion_date", "actual_close_date"].forEach(k => {
     m.lifecycle_dates[k] = isoDate(m.lifecycle_dates[k]);
@@ -1269,29 +1562,26 @@ function isoDate(s) {
 
 /* ============================ 7. QUEUE RUNNER ============================ */
 
-async function runQueue() {
-  if (state.running) return;
+async function prepareQueue() {
   state.abort = false;
   saveRoutingProfile();
   renderRoutingProfileEditor();
 
-  // 1. Gather raw rows
   setProgress(0, "Reading raw rows...");
   let rawRows = [];
   try { rawRows = await gatherRawRows(); }
-  catch (e) { setProgress(0, `Read error: ${e.message}`); return; }
+  catch (e) { setProgress(0, `Read error: ${e.message}`); return false; }
 
   if (!rawRows.length) {
     setProgress(0, "No rows found. Upload a trial source file in the sidebar.");
-    return;
+    return false;
   }
 
-  // Stamp the per-row sourceFormat from the dropdown if not set by parser
   rawRows.forEach(r => { if (!r.__sourceFormat) r.__sourceFormat = state.format; });
-
-  // 2. Cap by maxTrials and classify (delta-diff against existing export)
   rawRows = rawRows.slice(0, state.maxTrials);
   state.rawRows = rawRows;
+  ensureCarePathsFromRawRows(rawRows);
+
   const items = classifyRows(rawRows);
   state.results = items.map(it => it.result);
   state.resultsById = {};
@@ -1300,8 +1590,8 @@ async function runQueue() {
   renderTrials(items);
   updateStats(items);
   document.getElementById("exportBtn").disabled = false;
+  renderCarePathsPanel();
 
-  // Manual mode: no API key -> mark all pending as manual and stop here.
   const manualBanner = document.getElementById("manualBanner");
   if (!state.apiKey) {
     items.forEach((it, i) => {
@@ -1312,69 +1602,156 @@ async function runQueue() {
     });
     if (manualBanner) manualBanner.classList.remove("hidden");
     updateStats(items);
-    setProgress(100, "Manual mode — expand a trial to copy its prompt and paste back the JSON response.");
+    setProgress(100, "Rows loaded. Manual mode — expand a trial to copy its prompt and paste back JSON.");
+  } else {
+    if (manualBanner) manualBanner.classList.add("hidden");
+    const nextStep = state.processMode === "all" ? "Run all pending trials when ready." : "Process one trial or switch to Batch.";
+    setProgress(100, `Loaded ${items.length} trial row${items.length === 1 ? "" : "s"}. ${nextStep}`);
+  }
+  updateProcessButtonLabel();
+  updateWorkflowGuide();
+  focusTrialsList();
+  return true;
+}
+
+async function ensureCarePathsDetected() {
+  if (!state.apiKey || state.carePaths.length) return;
+  setProgress(0, "Detecting care paths from sample...");
+  try { await detectCarePathsFromSample({ silent: true }); } catch {}
+}
+
+function processableTrialIndexes() {
+  return trialItems
+    .map((it, i) => ["pending", "manual", "error"].includes(it.status) ? i : -1)
+    .filter(i => i >= 0);
+}
+
+async function processTrialAtIndex(i, processed, total) {
+  const it = trialItems[i];
+  if (!it || !["pending", "manual", "error"].includes(it.status)) return false;
+  const rawCarePathIds = carePathIdsFromRaw(it.raw);
+  it.status = "processing";
+  it.error = "";
+  it.progressLabel = "Calling model";
+  renderRow(it, i);
+  focusTrialRow(i);
+  setProgress(
+    Math.round(processed / Math.max(1, total) * 100),
+    `Processing ${it.preview.id} (${processed + 1}/${total})...`
+  );
+  try {
+    const result = await callOpenAI(it.raw);
+    it.progressLabel = "Finalizing";
+    renderRow(it, i);
+    applySpreadsheetSourceFields(result, it.raw);
+    if (!result.trial_id || result.trial_id === "string") result.trial_id = it.preview.id;
+    if (it.userRecruitmentStatus) {
+      result.metadata = result.metadata || {};
+      result.metadata.recruitment_status = it.userRecruitmentStatus;
+      result.active = it.userRecruitmentStatus === "Recruiting";
+    } else if (it.userActive === false) {
+      result.active = false;
+      result.metadata = result.metadata || {};
+      if (!result.metadata.recruitment_status || result.metadata.recruitment_status === "Unknown") {
+        result.metadata.recruitment_status = "Not yet recruiting";
+      }
+    }
+    markTrialAI(result, `openai/${state.model}`);
+    it.result = result;
+    it.status = "done";
+    state.results[i] = result;
+    state.resultsById[result.trial_id] = result;
+    let inferred = inferCarePathIds(result);
+    const diseaseCarePathIds = (!rawCarePathIds.length && !inferred.length) ? ensureCarePathsFromTrial(result) : [];
+    if (diseaseCarePathIds.length) inferred = inferCarePathIds(result);
+    result.care_path_ids = normalizeCarePathIds([
+      ...(result.care_path_ids || []),
+      ...rawCarePathIds,
+      ...diseaseCarePathIds,
+      ...inferred,
+    ]);
+  } catch (e) {
+    it.error = e.message;
+    it.status = "error";
+    it.progressLabel = "";
+  }
+  if (it.status !== "error") it.progressLabel = "";
+  renderRow(it, i);
+  focusTrialRow(i);
+  updateStats(trialItems);
+  renderCarePathsPanel();
+  updateWorkflowGuide();
+  return true;
+}
+
+async function processTrialIndexes(indexes, labelMode = "batch") {
+  if (state.running) return;
+  if (!trialItems.length) {
+    const prepared = await prepareQueue();
+    if (!prepared) return;
+  }
+
+  const idxs = indexes.filter(i => trialItems[i] && ["pending", "manual", "error"].includes(trialItems[i].status));
+  if (!idxs.length) {
+    setProgress(100, "No pending trials to process.");
+    updateProcessButtonLabel();
     return;
-  } else if (manualBanner) {
-    manualBanner.classList.add("hidden");
   }
 
-  // 2b. Auto-fill the care-path enum from the uploaded sample before per-trial
-  // extraction, so the extractor can assign normalized care_path_ids directly.
-  // Skips silently on failure; users can still detect/edit manually.
-  if (!state.carePaths.length) {
-    setProgress(0, "Detecting care paths from sample…");
-    try { await detectCarePathsFromSample({ silent: true }); } catch {}
+  const manualBanner = document.getElementById("manualBanner");
+  if (!state.apiKey) {
+    idxs.forEach(i => {
+      trialItems[i].status = "manual";
+      renderRow(trialItems[i], i);
+    });
+    if (manualBanner) manualBanner.classList.remove("hidden");
+    updateStats(trialItems);
+    setProgress(100, "Manual mode — expand a trial to copy its prompt and paste back JSON.");
+    updateProcessButtonLabel();
+    return;
   }
+  if (manualBanner) manualBanner.classList.add("hidden");
 
-  // 3. Process pending entries with throttle
+  state.abort = false;
   state.running = true;
   document.getElementById("processBtn").disabled = true;
   document.getElementById("stopBtn").classList.remove("hidden");
+  updateProcessButtonLabel();
 
-  const pendingIdxs = items.map((it, i) => it.status === "pending" ? i : -1).filter(i => i >= 0);
-  let processed = 0;
-  for (const i of pendingIdxs) {
-    if (state.abort) break;
-    const it = items[i];
-    it.status = "processing";
-    renderRow(it, i);
-    setProgress(
-      Math.round((processed) / Math.max(1, pendingIdxs.length) * 100),
-      `Processing ${it.preview.id} (${processed+1}/${pendingIdxs.length})...`
-    );
-    try {
-      const result = await callOpenAI(it.raw);
-      // Preserve preview ID if model dropped it
-      if (!result.trial_id || result.trial_id === "string") result.trial_id = it.preview.id;
-      // Preserve any pre-extraction active toggle the user already flipped.
-      if (it.userActive === false) result.active = false;
-      markTrialAI(result, `openai/${state.model}`);
-      it.result = result;
-      it.status = "done";
-      state.results[i] = result;
-      state.resultsById[result.trial_id] = result;
-      // Merge LLM-supplied + alias-inferred care paths (multi-valued). Any
-      // user edits made later are preserved because re-runs go through here once.
-      if (state.carePaths.length) {
-        const inferred = inferCarePathIds(result);
-        result.care_path_ids = normalizeCarePathIds([...(result.care_path_ids || []), ...inferred]);
-      }
-    } catch (e) {
-      it.error = e.message;
-      it.status = "error";
+  try {
+    await ensureCarePathsDetected();
+    let processed = 0;
+    for (const i of idxs) {
+      if (state.abort) break;
+      await processTrialAtIndex(i, processed, idxs.length);
+      processed++;
+      if (!state.abort && processed < idxs.length) await sleep(state.throttleMs);
     }
-    processed++;
-    renderRow(it, i);
-    updateStats(items);
-    if (!state.abort && processed < pendingIdxs.length) {
-      await sleep(state.throttleMs);
-    }
+  } finally {
+    state.running = false;
+    document.getElementById("processBtn").disabled = false;
+    document.getElementById("stopBtn").classList.add("hidden");
+    renderCarePathsPanel();
+    const remaining = processableTrialIndexes().length;
+    const doneLabel = labelMode === "single"
+      ? (remaining ? `Processed one trial. ${remaining} still pending.` : "All prepared trials processed.")
+      : (remaining ? `Processed selected trials. ${remaining} still pending.` : "Pipeline complete.");
+    setProgress(100, state.abort ? "Stopped." : doneLabel);
+    updateProcessButtonLabel();
+    trialItems.forEach((it, i) => renderRow(it, i));
+  }
+}
+
+async function runQueue() {
+  if (state.running) return;
+  if (!trialItems.length) {
+    const prepared = await prepareQueue();
+    if (!prepared || state.processMode === "single") return;
   }
 
-  setProgress(100, state.abort ? "Stopped." : "Pipeline complete.");  state.running = false;
-  document.getElementById("processBtn").disabled = false;
-  document.getElementById("stopBtn").classList.add("hidden");
-  renderCarePathsPanel();
+  const pending = processableTrialIndexes();
+  const idxs = state.processMode === "single" ? pending.slice(0, 1) : pending;
+  await processTrialIndexes(idxs, state.processMode === "single" ? "single" : "batch");
 }
 
 function sleep(ms) {
@@ -1390,6 +1767,105 @@ function sleep(ms) {
 function setProgress(pct, label) {
   document.getElementById("progressBar").style.width = `${Math.max(0, Math.min(100, pct))}%`;
   document.getElementById("progressLabel").textContent = label || "";
+}
+
+function updateProcessModeUi() {
+  document.querySelectorAll("[data-process-mode]").forEach(btn => {
+    const active = btn.dataset.processMode === state.processMode;
+    btn.className = "process-mode-btn rounded-lg px-2.5 py-1.5 text-[11px] font-semibold transition " + (
+      active
+        ? "bg-white text-slate-900 shadow-sm"
+        : "text-slate-500 hover:text-slate-800"
+    );
+    btn.setAttribute("aria-pressed", active ? "true" : "false");
+  });
+}
+
+function updateProcessButtonLabel() {
+  const label = document.getElementById("processBtnLabel");
+  const btn = document.getElementById("processBtn");
+  if (!label || !btn) return;
+  if (state.running) {
+    label.textContent = "Processing...";
+    btn.disabled = true;
+  } else if (!trialItems.length) {
+    label.textContent = "Load Trial Rows";
+    btn.disabled = false;
+  } else if (state.processMode === "single") {
+    label.textContent = "Process Next Trial";
+    btn.disabled = false;
+  } else {
+    label.textContent = "Run All Pending Trials";
+    btn.disabled = false;
+  }
+  updateProcessModeUi();
+  updateWorkflowGuide();
+}
+
+function updateWorkflowGuide() {
+  const steps = document.querySelectorAll("[data-workflow-step]");
+  if (!steps.length) return;
+  const pending = trialItems.length ? processableTrialIndexes().length : 0;
+  const done = trialItems.filter(it => it.status === "done" || it.status === "reused").length;
+  const hasSource = !!state.newFile || !!state.existingExport;
+  const states = {
+    source: hasSource ? ["done", state.newFile ? "source ready" : "export ready"] : ["active", "choose source"],
+    setup: ["optional", "ready"],
+    rows: trialItems.length ? ["done", `${trialItems.length} loaded`] : (hasSource ? ["active", "load rows"] : ["pending", "waiting"]),
+    process: trialItems.length
+      ? (pending ? ["active", `${pending} pending`] : ["done", `${done} complete`])
+      : ["pending", "trial"],
+  };
+  steps.forEach(step => {
+    const [status, label] = states[step.dataset.workflowStep] || ["pending", ""];
+    step.className = "rounded-lg border px-2 py-1.5 " + (
+      status === "done"
+        ? "border-emerald-200 bg-emerald-50"
+        : status === "active"
+          ? "border-slate-900 bg-white shadow-sm"
+          : status === "optional"
+            ? "border-slate-200 bg-white"
+            : "border-slate-200 bg-slate-50"
+    );
+    const title = step.querySelector(".font-bold");
+    if (title) title.className = "font-bold " + (status === "done" ? "text-emerald-800" : status === "active" ? "text-slate-900" : "text-slate-600");
+    const labelEl = step.querySelector("[data-workflow-label]");
+    if (labelEl) {
+      labelEl.textContent = label;
+      labelEl.className = "mt-0.5 truncate " + (status === "done" ? "text-emerald-700" : status === "active" ? "text-slate-600" : "text-slate-400");
+    }
+  });
+}
+
+function focusTrialsList() {
+  const section = document.getElementById("trialsSection");
+  if (!section) return;
+  setTimeout(() => section.scrollIntoView({ behavior: "smooth", block: "start" }), 40);
+}
+
+function focusTrialRow(i) {
+  const list = document.getElementById("trialsList");
+  const root = list?.querySelector(`details[data-idx="${i}"]`);
+  if (!root) return;
+  root.open = true;
+  const item = trialItems[i];
+  if (item) renderBody(root.querySelector("[data-body]"), item, i);
+  setTimeout(() => root.scrollIntoView({ behavior: "smooth", block: "center" }), 40);
+}
+
+function clearPreparedTrials(message = "Source ready. Load trial rows to review before processing.") {
+  trialItems.length = 0;
+  state.rawRows = [];
+  state.results = [];
+  state.resultsById = {};
+  const list = document.getElementById("trialsList");
+  if (list) list.innerHTML = `<div class="p-8 text-sm text-slate-500 text-center">No trials loaded.</div>`;
+  const exportBtn = document.getElementById("exportBtn");
+  if (exportBtn) exportBtn.disabled = true;
+  updateStats([]);
+  setProgress(0, message);
+  updateProcessButtonLabel();
+  updateWorkflowGuide();
 }
 
 function updateStats(items) {
@@ -1409,7 +1885,7 @@ function updateStats(items) {
 function statusBadge(status) {
   const map = {
     pending:    ["bg-slate-100 text-slate-600", "Pending"],
-    processing: ["bg-blue-100 text-blue-700", "Processing"],
+    processing: ["bg-blue-100 text-blue-700", `<span class="ts-spinner h-3 w-3 rounded-full border-2 border-blue-200 border-t-blue-700"></span> Processing`],
     done:       ["bg-emerald-100 text-emerald-700", "Done"],
     reused:     ["bg-amber-100 text-amber-700", "Reused"],
     manual:     ["bg-indigo-100 text-indigo-700", "Manual"],
@@ -1699,16 +2175,17 @@ function buildRow(it, i) {
     toggle.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
-      // Initialise active flag on the result if missing; if the trial hasn't
-      // been processed yet, we still allow toggling — store the flag on `it`
-      // and copy it onto `it.result` once extraction finishes.
-      if (it.result) {
-        it.result.active = it.result.active === false ? true : false;
-        markTrialEdited(it.result);
-      } else {
-        it.userActive = it.userActive === false ? true : false;
-      }
+      const nextRecruiting = !isTrialRecruiting(it);
+      setTrialRecruitmentState(it, nextRecruiting);
       updateRow(root, it);
+    });
+  }
+  const oneBtn = root.querySelector("[data-process-one]");
+  if (oneBtn) {
+    oneBtn.addEventListener("click", async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      await processTrialIndexes([i], "single");
     });
   }
   updateRow(root, it);
@@ -1727,20 +2204,40 @@ function renderRow(it, i) {
   if (root.open) renderBody(root.querySelector("[data-body]"), it, i);
 }
 
+function isTrialRecruiting(it) {
+  const status = it.result?.metadata?.recruitment_status || it.userRecruitmentStatus || "";
+  if (status === "Not yet recruiting") return false;
+  if (status === "Completed") return false;
+  return it.result ? it.result.active !== false : it.userActive !== false;
+}
+
+function setTrialRecruitmentState(it, recruiting) {
+  const status = recruiting ? "Recruiting" : "Not yet recruiting";
+  if (it.result) {
+    it.result.active = recruiting;
+    it.result.metadata = it.result.metadata || {};
+    it.result.metadata.recruitment_status = status;
+    markTrialEdited(it.result);
+  } else {
+    it.userActive = recruiting;
+    it.userRecruitmentStatus = status;
+  }
+}
+
 function updateRow(root, it) {
-  // Active toggle visual state. Defaults to active when unknown.
+  // Recruitment toggle visual state. Defaults to recruiting when unknown.
   const toggle = root.querySelector("[data-active-toggle]");
   if (toggle) {
-    const active = it.result ? (it.result.active !== false) : (it.userActive !== false);
-    toggle.title = active ? "Trial is active — click to deactivate" : "Trial is inactive — click to activate";
-    toggle.className = "shrink-0 w-7 h-7 rounded-md border text-[10px] font-bold transition flex items-center justify-center " + (
-      active
+    const recruiting = isTrialRecruiting(it);
+    toggle.title = recruiting ? "Recruiting — click to mark not yet recruiting" : "Not yet recruiting — click to mark recruiting";
+    toggle.className = "shrink-0 min-w-28 h-7 rounded-md border text-[10px] font-bold transition flex items-center justify-center px-2 " + (
+      recruiting
         ? "bg-emerald-500 text-white border-emerald-500 hover:bg-emerald-600"
         : "bg-white text-slate-300 border-slate-300 hover:border-slate-400"
     );
-    toggle.textContent = active ? "ON" : "OFF";
+    toggle.textContent = recruiting ? "Recruiting" : "Not yet";
     // Dim the rest of the summary when inactive.
-    root.classList.toggle("opacity-60", !active);
+    root.classList.toggle("opacity-60", !recruiting);
   }
   root.querySelector("[data-status]").outerHTML =
     statusBadge(it.status).replace("<span ", `<span data-status `);
@@ -1754,20 +2251,36 @@ function updateRow(root, it) {
   if (it.result?.criteria) {
     const total = it.result.criteria.length;
     const act = it.result.criteria.filter(c => c.status === "active").length;
-    counts = `${act}/${total} criteria active · ${it.result.care_path?.phases?.length || 0} phases`;
+    counts = `${act}/${total} criteria active`;
   }
   root.querySelector("[data-counts]").textContent = counts;
   // Provenance pills: shows whether the trial was structured by an LLM and/or
   // carries manual edits, so reviewers can see at a glance what's been touched.
   const prov = root.querySelector("[data-prov]");
   if (prov) prov.innerHTML = it.result ? provenancePillsHtml(it.result.edit_state) : "";
+  const processFeedback = root.querySelector("[data-process-feedback]");
+  if (processFeedback) {
+    processFeedback.classList.toggle("hidden", it.status !== "processing");
+    processFeedback.classList.toggle("inline-flex", it.status === "processing");
+    const text = processFeedback.querySelector("[data-process-feedback-text]");
+    if (text) text.textContent = it.progressLabel || "Structuring";
+  }
+  const oneBtn = root.querySelector("[data-process-one]");
+  if (oneBtn) {
+    const canProcess = !!state.apiKey && !state.running && ["pending", "manual", "error"].includes(it.status);
+    oneBtn.classList.toggle("hidden", !canProcess);
+    oneBtn.disabled = !canProcess;
+    oneBtn.textContent = it.status === "error" ? "Retry" : "Process";
+    oneBtn.title = it.status === "error" ? "Retry this trial" : "Process this trial";
+  }
 }
 
 function renderBody(host, it, i) {
   const t = it.result;
+  const hasApiKey = !!state.apiKey;
 
-  // Per-trial manual prompt panel (always available, regardless of status).
-  const manualPanel = `
+  // Per-trial manual prompt panel, shown only when no API key is available.
+  const manualPanel = hasApiKey ? "" : `
     <details class="mb-3 bg-white rounded-xl border border-slate-200 group">
       <summary class="px-4 py-2.5 flex items-center gap-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 rounded-xl">
         <svg viewBox="0 0 24 24" class="w-3.5 h-3.5 text-slate-400 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -1794,19 +2307,18 @@ function renderBody(host, it, i) {
   if (!t) {
     host.innerHTML = manualPanel + (it.error
       ? `<div class="text-sm text-rose-700 bg-rose-50 border border-rose-200 rounded-xl p-3">${escapeHtml(it.error)}</div>`
-      : `<div class="text-sm text-slate-500 italic p-3">Not processed yet. Use the manual panel above, or save an API key and run the queue.</div>`);
-    bindManualPanel(host, it, i);
+      : `<div class="text-sm text-slate-500 italic p-3">${hasApiKey ? "Not processed yet. Use Process on this trial or Process Next Trial." : "Not processed yet. Use the manual panel above, or save an API key and run the queue."}</div>`);
+    if (!hasApiKey) bindManualPanel(host, it, i);
     return;
   }
 
   const m = t.metadata || {};
-  const phases = t.care_path?.phases || [];
   const ld = m.lifecycle_dates || {};
   const recOptions = RECRUITMENT_STATES.map(s =>
     `<option value="${escapeHtml(s)}"${m.recruitment_status === s ? " selected" : ""}>${escapeHtml(s)}</option>`
   ).join("");
   host.innerHTML = manualPanel + `
-    <div class="grid grid-cols-1 xl:grid-cols-3 gap-4 mt-3">
+    <div class="grid grid-cols-1 gap-4 mt-3">
       <!-- Metadata card (editable) -->
       <div class="bg-white rounded-xl border border-slate-200 p-4" data-meta-card>
         <div class="flex items-center justify-between">
@@ -1818,7 +2330,7 @@ function renderBody(host, it, i) {
         <div class="mt-2 grid grid-cols-2 gap-y-1.5 gap-x-3 text-[12px]">
           <label class="text-slate-500 self-center">Phase</label>
           <input type="text" data-mfield="phase" value="${escapeHtml(m.phase||"")}" class="meta-input"/>
-          <label class="text-slate-500 self-center">Status</label>
+          <label class="text-slate-500 self-center">Recruitment</label>
           <select data-mfield="recruitment_status" class="meta-input">${recOptions}</select>
           <label class="text-slate-500 self-center">Enrollment</label>
           <input type="number" data-mfield="enrollment_target" value="${m.enrollment_target ?? ""}" class="meta-input"/>
@@ -1835,20 +2347,6 @@ function renderBody(host, it, i) {
           <label class="text-slate-500 self-center">Actual close</label>
           <input type="date" data-mfield="lifecycle_dates.actual_close_date" value="${escapeHtml(ld.actual_close_date||"")}" class="meta-input"/>
         </div>
-      </div>
-
-      <!-- Care path -->
-      <div class="bg-white rounded-xl border border-slate-200 p-4 xl:col-span-2">
-        <h3 class="text-xs font-bold uppercase tracking-wider text-slate-500">Care Path</h3>
-        <ol class="mt-2 relative border-l border-slate-200 pl-4 space-y-3">
-          ${phases.map((p, idx) => `
-            <li class="relative">
-              <span class="absolute -left-[22px] top-1 w-3 h-3 rounded-full bg-blue-500 ring-4 ring-blue-100"></span>
-              <div class="text-sm font-semibold text-slate-900">${idx+1}. ${escapeHtml(p.phase_name)} <span class="text-[11px] font-normal text-slate-500">${escapeHtml(p.duration||"")}</span></div>
-              <div class="text-[12px] text-slate-600">${escapeHtml(p.description||"")}</div>
-              ${(p.key_activities||[]).length ? `<ul class="mt-1 flex flex-wrap gap-1">${p.key_activities.map(a => `<li class="badge bg-slate-100 text-slate-700 border border-slate-200">${escapeHtml(a)}</li>`).join("")}</ul>` : ""}
-            </li>`).join("") || `<li class="text-sm text-slate-500 italic">No care path phases inferred.</li>`}
-        </ol>
       </div>
     </div>
 
@@ -1869,7 +2367,7 @@ function renderBody(host, it, i) {
   (t.criteria || []).forEach((c, ci) => critHost.appendChild(buildCriterionRow(t, c, ci)));
   enableCriterionDrag(critHost, t);
   bindMetadataInputs(host, t);
-  bindManualPanel(host, it, i);
+  if (!hasApiKey) bindManualPanel(host, it, i);
 }
 
 // Wire up live edits on the editable metadata card.
@@ -1958,7 +2456,7 @@ function bindManualPanel(host, it, i) {
     txt = txt.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "");
     try {
       const parsed = JSON.parse(txt);
-      const clean = sanitizeTrial(parsed);
+      const clean = applySpreadsheetSourceFields(sanitizeTrial(parsed), it.raw);
       if (!clean.trial_id || clean.trial_id === "string") clean.trial_id = it.preview.id;
       markTrialAI(clean, "manual-paste");
       it.result = clean;
@@ -2047,6 +2545,65 @@ function uniqueCarePathId(base) {
   return id;
 }
 
+function carePathLabelFromHint(value) {
+  const s = String(value || "").trim().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
+  if (!s) return "";
+  return s.replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function carePathHintsFromValue(value) {
+  return String(value || "")
+    .split(/[,;|\n]+/)
+    .map(s => s.trim())
+    .filter(Boolean);
+}
+
+function upsertCarePathFromHint(value) {
+  const raw = String(value || "").trim();
+  const label = carePathLabelFromHint(raw);
+  if (!label) return "";
+  const id = slugifyCarePath(raw);
+  const alias = raw.toLowerCase();
+  let cp = state.carePaths.find(c =>
+    c.id === id ||
+    String(c.label || "").toLowerCase() === label.toLowerCase() ||
+    (c.aliases || []).some(a => String(a).toLowerCase() === alias)
+  );
+  if (!cp) {
+    cp = { id: state.carePaths.some(c => c.id === id) ? uniqueCarePathId(id) : id, label, aliases: [alias] };
+    state.carePaths.push(cp);
+  } else if (alias && !(cp.aliases || []).includes(alias)) {
+    cp.aliases = [...(cp.aliases || []), alias];
+  }
+  return cp.id;
+}
+
+function ensureCarePathsFromRawRows(rawRows) {
+  const before = JSON.stringify(state.carePaths);
+  (rawRows || []).forEach(row => {
+    carePathHintsFromValue(row.__raw?.care_path).forEach(upsertCarePathFromHint);
+  });
+  if (JSON.stringify(state.carePaths) !== before) {
+    saveCarePaths();
+    return true;
+  }
+  return false;
+}
+
+function carePathIdsFromRaw(row) {
+  if (!row?.__raw?.care_path) return [];
+  const ids = carePathHintsFromValue(row.__raw.care_path).map(upsertCarePathFromHint).filter(Boolean);
+  if (ids.length) saveCarePaths();
+  return normalizeCarePathIds(ids);
+}
+
+function ensureCarePathsFromTrial(trial) {
+  if (!trial?.metadata?.diseases?.length) return [];
+  const ids = trial.metadata.diseases.slice(0, 3).map(upsertCarePathFromHint).filter(Boolean);
+  if (ids.length) saveCarePaths();
+  return normalizeCarePathIds(ids);
+}
+
 // Normalize an arbitrary list of care-path ids: lowercase, dedupe, and (when an
 // enum is defined) keep only ids that exist in it. When the enum is still empty
 // the raw ids are preserved so an LLM-supplied assignment survives until detection.
@@ -2114,8 +2671,8 @@ async function detectCarePathsFromSample({ silent = false } = {}) {
   setStatus(`<span class="italic text-slate-500">Sampling ${sample.length} trials…</span>`);
   const sys = `You normalize clinical trials from ANY field of medicine (oncology, cardiology, neurology, endocrinology, infectious disease, rheumatology, …) into a small enum of CARE PATHS — clinical-domain buckets used downstream for patient matching. Examples (illustrative, NOT exhaustive): "breast_cancer", "prostate_cancer", "heart_failure", "atrial_fibrillation", "type_2_diabetes", "alzheimer_disease", "rheumatoid_arthritis", "hiv". Given a sample of trials in any language (e.g. Dutch "borst"/"mamma" -> breast cancer, "prostaat" -> prostate cancer, "hartfalen" -> heart failure, "suikerziekte" -> diabetes), return a deduplicated enum covering ALL of them. Return STRICT JSON: {"care_paths":[{"id":"breast_cancer","label":"Breast cancer","aliases":["breast cancer","mamma","mammacarcinoma","borst","borstkanker"]}]}. Use snake_case English ids. Choose specificity that matches the sample (sub-types when meaningful, broader domains when not). Aliases MUST include every language/spelling/synonym that appears in the sample so downstream alias-matching can place trials into the right bucket. Use lowercase aliases. 3-15 care paths total. No prose.`;
   const condensed = sample.map((r, i) => {
-    const title = r.__raw?.metadata?.brief_title || r.__raw?.brief_title || r.__raw?.Studietitel || r.__raw?.Titel || "";
-    const dis   = r.__raw?.metadata?.conditions || r.__raw?.diseases || r.__raw?.Tumorgroep || r.__raw?.Indicatie || "";
+    const title = r.__raw?.metadata?.brief_title || r.__raw?.brief_title || r.__raw?.trial || r.__raw?.Studietitel || r.__raw?.Titel || "";
+    const dis   = r.__raw?.metadata?.conditions || r.__raw?.diseases || r.__raw?.condition || r.__raw?.indication || r.__raw?.care_path || "";
     return `${i+1}. title="${String(title).slice(0,160)}" diseases="${Array.isArray(dis)?dis.join(", "):String(dis).slice(0,120)}"`;
   }).join("\n");
   try {
@@ -2721,6 +3278,7 @@ const TS_V1 = {
     "phase 4": "phase-4", "phase iv": "phase-4",
   },
   STATUS_MAP: {
+    "Unknown":                "unknown",
     "Not yet recruiting":     "not-yet-recruiting",
     "Recruiting":             "recruiting",
     "Active, not recruiting": "active-not-recruiting",
@@ -2730,6 +3288,7 @@ const TS_V1 = {
     "Withdrawn":              "withdrawn",
   },
   STATUS_INVERSE: {
+    "unknown":                "Unknown",
     "not-yet-recruiting":     "Not yet recruiting",
     "recruiting":             "Recruiting",
     "active-not-recruiting":  "Active, not recruiting",
@@ -2916,7 +3475,7 @@ function tsv1Trial(t) {
   const conditions = (m.diseases || []).map(d => tsv1Coding({ text: String(d) })).filter(Boolean);
   const interventions = (m.drugs || []).map(d => ({ type: "drug", label: String(d) }));
   const lifecycle = {};
-  if (m.recruitment_status) {
+  if (m.recruitment_status && m.recruitment_status !== "Unknown") {
     lifecycle.status = TS_V1.STATUS_MAP[m.recruitment_status] || "unknown";
   }
   const ld = m.lifecycle_dates || {};
@@ -3005,7 +3564,7 @@ function fromV1Trial(v) {
     drugs: (v.interventions || []).map(i => i.label).filter(Boolean),
     diseases: (v.conditions || []).map(c => c.display || c.text || c.code || "").filter(Boolean),
     enrollment_target: v.enrollment?.target || 0,
-    recruitment_status: TS_V1.STATUS_INVERSE[v.lifecycle?.status] || "Recruiting",
+    recruitment_status: TS_V1.STATUS_INVERSE[v.lifecycle?.status] || "Unknown",
     lifecycle_dates: {
       start_date:              v.lifecycle?.start_date || "",
       primary_completion_date: v.lifecycle?.primary_completion_date || "",
@@ -3176,6 +3735,23 @@ document.addEventListener("DOMContentLoaded", () => {
     btn.addEventListener("click", () => downloadTemplate(btn.dataset.tpl));
   });
   document.getElementById("loadDemoBtn").addEventListener("click", loadDemoCorpus);
+  document.getElementById("ctgovSourceToggle")?.addEventListener("click", () => {
+    const panel = document.getElementById("ctgovSourcePanel");
+    const toggle = document.getElementById("ctgovSourceToggle");
+    const willShow = panel?.classList.contains("hidden");
+    panel?.classList.toggle("hidden", !willShow);
+    toggle?.classList.toggle("ring-2", !!willShow);
+    toggle?.classList.toggle("ring-cyan-200", !!willShow);
+    toggle?.classList.toggle("bg-cyan-50", !!willShow);
+    if (willShow) document.getElementById("ctgovNctInput")?.focus();
+  });
+  document.querySelectorAll("[data-process-mode]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      state.processMode = btn.dataset.processMode === "all" ? "all" : "single";
+      updateProcessButtonLabel();
+    });
+  });
+  updateProcessButtonLabel();
   document.getElementById("processBtn").addEventListener("click", runQueue);
   document.getElementById("stopBtn").addEventListener("click", () => {
     state.abort = true;
@@ -3201,6 +3777,7 @@ async function loadDemoCorpus() {
     state.newFile = file;
     document.getElementById("newFileName").textContent = `${file.name} (${formatBytes(file.size)}) · sample`;
     await previewAndDetectFormat(file);
+    clearPreparedTrials("Sample source ready. Load trial rows to review before processing.");
   } catch (e) {
     setFormatBanner("error", `Could not load sample: ${e.message}. Make sure ingestion/corpus-sigir-snippet.jsonl is served alongside index.html.`);
   } finally {

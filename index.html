@@ -46,6 +46,9 @@
     .meta-input:focus { outline:none; border-color:var(--ts-teal); background:#fff; box-shadow:0 0 0 2px rgb(0 166 180 / .15); }
     details > summary { list-style: none; cursor: pointer; }
     details > summary::-webkit-details-marker { display: none; }
+    details[open] > summary .details-chevron { transform: rotate(180deg); }
+    @keyframes ts-spin { to { transform: rotate(360deg); } }
+    .ts-spinner { animation: ts-spin .8s linear infinite; }
     .ring-focus:focus { outline: none; box-shadow: 0 0 0 2px rgb(0 166 180 / .35); }
     .grad-bg {
       background:
@@ -141,9 +144,7 @@
     <!-- ======================= LEFT SIDEBAR ======================= -->
     <aside class="col-span-12 lg:col-span-3 space-y-4">
 
-      <!-- Start: two parallel entry points (upload OR resume). Both routes
-           land on the same Run button below, so they are visual peers — not
-           sequential steps. -->
+      <!-- Start: choose a source, optionally load a prior export to reuse edits. -->
       <section class="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm">
         <div class="flex items-center justify-between">
           <h2 class="text-sm font-semibold text-slate-900">Start</h2>
@@ -151,39 +152,80 @@
             <svg viewBox="0 0 24 24" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1" stroke-linecap="round"/></svg>
           </button>
         </div>
-        <p class="mt-0.5 text-[11px] text-slate-500">Pick a route — either works.</p>
+        <p class="mt-0.5 text-[11px] text-slate-500">Choose trial rows, then optionally reuse edits from an earlier export.</p>
+        <div id="workflowGuide" class="mt-3 grid grid-cols-4 gap-1.5 text-[10px]">
+          <div data-workflow-step="source" class="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5">
+            <div class="font-bold text-slate-700">1 Source</div>
+            <div data-workflow-label class="mt-0.5 text-slate-400 truncate">choose source</div>
+          </div>
+          <div data-workflow-step="setup" class="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5">
+            <div class="font-bold text-slate-700">2 Setup</div>
+            <div data-workflow-label class="mt-0.5 text-slate-400 truncate">optional</div>
+          </div>
+          <div data-workflow-step="rows" class="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5">
+            <div class="font-bold text-slate-700">3 Rows</div>
+            <div data-workflow-label class="mt-0.5 text-slate-400 truncate">load</div>
+          </div>
+          <div data-workflow-step="process" class="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5">
+            <div class="font-bold text-slate-700">4 Process</div>
+            <div data-workflow-label class="mt-0.5 text-slate-400 truncate">trial</div>
+          </div>
+        </div>
 
-        <!-- Route A: upload a fresh source file -->
+        <!-- Source: upload a fresh source file or use the bundled sample -->
         <div class="mt-3">
           <div class="brand-upload-label flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider">
             <svg viewBox="0 0 24 24" class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 16V4M6 10l6-6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            Upload trials
+            Trial source
           </div>
-          <label class="brand-dropzone-navy mt-1.5 flex flex-col items-center justify-center gap-1 border-2 border-dashed border-slate-300 rounded-xl px-3 py-4 cursor-pointer text-center transition">
-            <span id="newFileName" class="text-xs font-semibold text-slate-700 truncate max-w-full">Drop or click a file</span>
-            <span class="text-[10px] text-slate-400">.xlsx &middot; .csv &middot; .json &middot; .jsonl</span>
-            <input id="newFileInput" type="file" accept=".json,.jsonl,.xlsx,.xls,.csv" class="hidden"/>
-          </label>
+          <div class="mt-1.5 grid grid-cols-3 gap-2">
+            <label class="brand-dropzone-navy flex flex-col items-center justify-center gap-1 border-2 border-dashed border-slate-300 rounded-xl px-3 py-4 cursor-pointer text-center transition min-h-[92px]">
+              <span id="newFileName" class="text-xs font-semibold text-slate-700 truncate max-w-full">Upload file</span>
+              <span class="text-[10px] text-slate-400">xlsx/csv/json</span>
+              <input id="newFileInput" type="file" accept=".json,.jsonl,.xlsx,.xls,.csv" class="hidden"/>
+            </label>
+            <button id="loadDemoBtn" type="button" class="min-h-[92px] inline-flex flex-col items-center justify-center gap-1 text-xs font-semibold text-slate-700 bg-slate-50 border border-slate-200 rounded-xl px-3 py-4 hover:bg-slate-100">
+              <svg viewBox="0 0 24 24" class="w-4 h-4 text-slate-500" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 3v18l7-4 7 4V3z"/></svg>
+              Try example
+              <span class="text-[10px] font-normal text-slate-400">sample trials</span>
+            </button>
+            <button id="ctgovSourceToggle" type="button" class="min-h-[92px] inline-flex flex-col items-center justify-center gap-1 text-xs font-semibold text-slate-700 bg-white border border-slate-200 rounded-xl px-3 py-4 hover:bg-slate-50">
+              <svg viewBox="0 0 24 24" class="w-4 h-4 text-slate-500" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 21l-4.3-4.3M11 19a8 8 0 1 1 0-16 8 8 0 0 1 0 16z" stroke-linecap="round"/></svg>
+              Fetch CT.gov
+              <span class="text-[10px] font-normal text-slate-400">NCT id</span>
+            </button>
+          </div>
+          <div id="ctgovSourcePanel" class="hidden mt-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 space-y-2">
+            <p class="text-[10.5px] text-slate-500 leading-snug">Paste one or more NCT ids. We'll pull the public CT.gov v2 record and stage it as the trial source.</p>
+            <div class="flex flex-wrap items-center gap-2 text-[10.5px] text-slate-500">
+              <a href="https://clinicaltrials.gov/search?" target="_blank" rel="noopener" class="brand-chip inline-flex items-center gap-1 rounded-full px-2 py-1 font-medium">
+                <svg viewBox="0 0 24 24" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 3h7v7M10 14 21 3M21 14v7h-7M3 10 14 21" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                Browse
+              </a>
+              <span>Quick test:</span>
+              <button type="button" class="ctgov-example brand-chip brand-chip-navy rounded-full px-2 py-1 font-medium" data-nct="NCT00995306">NCT00995306</button>
+              <button type="button" class="ctgov-example brand-chip brand-chip-teal rounded-full px-2 py-1 font-medium" data-nct="NCT02073188">NCT02073188</button>
+              <button type="button" class="ctgov-example brand-chip brand-chip-green rounded-full px-2 py-1 font-medium" data-nct="NCT00188279">NCT00188279</button>
+            </div>
+            <div class="flex gap-2">
+              <input id="ctgovNctInput" type="text" placeholder="NCT04567890"
+                class="flex-1 text-[12px] bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 ring-focus uppercase tracking-wide" autocapitalize="characters" spellcheck="false" />
+              <button id="ctgovFetchBtn" type="button"
+                class="text-[11px] font-semibold rounded-lg px-3 py-1.5 text-white"
+                style="background:var(--ts-teal)">Load</button>
+            </div>
+            <div id="ctgovFetchStatus" class="hidden text-[11px] rounded-lg px-2.5 py-1.5"></div>
+          </div>
           <div id="formatBanner" class="hidden mt-2 text-[11px] rounded-lg px-2.5 py-1.5"></div>
-          <button id="loadDemoBtn" type="button" class="mt-2 w-full inline-flex items-center justify-center gap-2 text-[11px] font-medium text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 hover:bg-slate-100">
-            <svg viewBox="0 0 24 24" class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 3v18l7-4 7 4V3z"/></svg>
-            Try with sample trials
-          </button>
         </div>
 
-        <!-- "or" divider -->
-        <div class="my-3 flex items-center gap-2">
-          <div class="flex-1 h-px bg-slate-200"></div>
-          <span class="text-[10px] font-semibold uppercase tracking-wider text-slate-400">or</span>
-          <div class="flex-1 h-px bg-slate-200"></div>
-        </div>
-
-        <!-- Route B: resume from a previously generated export -->
-        <div>
+        <!-- Optional: reuse reviewed work from a previous TrialSchema export -->
+        <div class="mt-3 pt-3 border-t border-slate-100">
           <div class="brand-resume-label flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider">
             <svg viewBox="0 0 24 24" class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h12l4 4v12H4z M9 13h6M9 17h6" stroke-linecap="round"/></svg>
-            Resume from a previous export
+            Reuse previous edits
           </div>
+          <p class="mt-1 text-[10px] text-slate-500 leading-snug">Optional: load an old export to continue it alone, or merge its reviewed trials when a new upload has matching IDs.</p>
           <label class="brand-dropzone-teal mt-1.5 flex items-center gap-2 border-2 border-dashed border-slate-300 rounded-xl px-3 py-2.5 cursor-pointer transition">
             <svg viewBox="0 0 24 24" class="w-4 h-4 text-slate-500 shrink-0" fill="none"><path d="M4 4h12l4 4v12H4z" stroke="currentColor" stroke-width="1.6"/></svg>
             <span id="existingFileName" class="text-[11px] text-slate-600 truncate flex-1">trialschema_export.json</span>
@@ -195,16 +237,20 @@
         <!-- Then: run / stop -->
         <div class="mt-4 pt-3 border-t border-slate-100">
           <div class="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1.5">Then</div>
+          <div class="mb-2 grid grid-cols-2 gap-1 rounded-xl bg-slate-100 p-1" role="group" aria-label="Processing mode">
+            <button type="button" data-process-mode="single" class="process-mode-btn rounded-lg px-2.5 py-1.5 text-[11px] font-semibold transition">One by one</button>
+            <button type="button" data-process-mode="all" class="process-mode-btn rounded-lg px-2.5 py-1.5 text-[11px] font-semibold transition">Batch</button>
+          </div>
           <button id="processBtn" class="w-full inline-flex items-center justify-center gap-2 bg-slate-900 text-white text-sm font-semibold rounded-xl px-3 py-2.5 hover:bg-slate-700 disabled:opacity-60 disabled:cursor-not-allowed">
             <svg viewBox="0 0 24 24" class="w-4 h-4" fill="none"><path d="M5 12l5 5L20 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            <span id="processBtnLabel">Run Structured Extraction</span>
+            <span id="processBtnLabel">Load Trial Rows</span>
           </button>
           <div id="ctgovRunHint" class="hidden mt-2 text-[11px] rounded-lg px-2.5 py-2" style="border:1px solid rgba(0,166,180,.18);background:rgba(234,248,251,.98);color:var(--ts-ink)"></div>
           <button id="stopBtn" class="hidden mt-2 w-full inline-flex items-center justify-center gap-2 bg-rose-600 text-white text-sm font-semibold rounded-xl px-3 py-2.5 hover:bg-rose-500">
             <svg viewBox="0 0 24 24" class="w-4 h-4" fill="none"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>
             Stop
           </button>
-          <p class="mt-2 text-[10px] text-slate-400 leading-snug">No API key? Each trial has <strong>Copy prompt</strong> / <strong>Paste JSON</strong> — use any LLM.</p>
+          <p id="manualModeHint" class="mt-2 text-[10px] text-slate-400 leading-snug">No API key? Each trial has <strong>Copy prompt</strong> / <strong>Paste JSON</strong> — use any LLM.</p>
         </div>
       </section>
 
@@ -230,36 +276,6 @@
         </div>
       </details>
 
-      <!-- CT.gov quick-fetch: tucked-away affordance for power users.
-           Closed by default so it doesn't crowd the upload flow. -->
-      <details class="bg-transparent rounded-2xl border border-dashed border-slate-200">
-        <summary class="px-4 py-2.5 text-xs font-medium text-slate-500 cursor-pointer flex items-center gap-2 hover:text-slate-700">
-          <svg viewBox="0 0 24 24" class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M21 21l-4.3-4.3M11 19a8 8 0 1 1 0-16 8 8 0 0 1 0 16z" stroke-linecap="round"/></svg>
-          Or fetch a study from ClinicalTrials.gov
-        </summary>
-        <div class="px-4 pb-3 space-y-2">
-          <p class="text-[10.5px] text-slate-500 leading-snug">Paste an NCT id (or several, comma-separated). We'll pull the structured record from the public CT.gov v2 API and run it through extraction.</p>
-          <div class="flex flex-wrap items-center gap-2 text-[10.5px] text-slate-500">
-            <a href="https://clinicaltrials.gov/search?" target="_blank" rel="noopener" class="brand-chip inline-flex items-center gap-1 rounded-full px-2 py-1 font-medium">
-              <svg viewBox="0 0 24 24" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 3h7v7M10 14 21 3M21 14v7h-7M3 10 14 21" stroke-linecap="round" stroke-linejoin="round"/></svg>
-              Browse CT.gov search
-            </a>
-            <span>Quick test:</span>
-            <button type="button" class="ctgov-example brand-chip brand-chip-navy rounded-full px-2 py-1 font-medium" data-nct="NCT00995306">NCT00995306</button>
-            <button type="button" class="ctgov-example brand-chip brand-chip-teal rounded-full px-2 py-1 font-medium" data-nct="NCT02073188">NCT02073188</button>
-            <button type="button" class="ctgov-example brand-chip brand-chip-green rounded-full px-2 py-1 font-medium" data-nct="NCT00188279">NCT00188279</button>
-            <button type="button" class="ctgov-example brand-chip rounded-full px-2 py-1 font-medium" data-ncts="NCT00995306, NCT02073188, NCT00188279">3-study batch</button>
-          </div>
-          <div class="flex gap-2">
-            <input id="ctgovNctInput" type="text" placeholder="NCT04567890"
-              class="flex-1 text-[12px] bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 ring-focus uppercase tracking-wide" autocapitalize="characters" spellcheck="false" />
-            <button id="ctgovFetchBtn" type="button"
-              class="text-[11px] font-semibold rounded-lg px-3 py-1.5 text-white"
-              style="background:var(--ts-teal)">Load</button>
-          </div>
-          <div id="ctgovFetchStatus" class="hidden text-[11px] rounded-lg px-2.5 py-1.5"></div>
-        </div>
-      </details>
     </aside>
 
     <!-- Source info popover -->
@@ -271,9 +287,11 @@
             <svg viewBox="0 0 24 24" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18" stroke-linecap="round"/></svg>
           </button>
         </div>
-        <p class="mt-2 text-xs text-slate-600 leading-relaxed">TrialSchema accepts four formats and auto-detects on upload:</p>
+        <p class="mt-2 text-xs text-slate-600 leading-relaxed">TrialSchema accepts these formats and auto-detects on upload:</p>
         <ul class="mt-2 text-xs text-slate-700 space-y-1.5 list-disc pl-5">
-          <li><strong>Excel / CSV</strong> (Dutch corpus layout): columns <code class="text-[11px] bg-slate-100 rounded px-1">Naam studie</code>, <code class="text-[11px] bg-slate-100 rounded px-1">inclusion_criteria</code>, <code class="text-[11px] bg-slate-100 rounded px-1">exclusion_criteria</code>, etc.</li>
+          <li><strong>Excel / CSV</strong>: required <code class="text-[11px] bg-slate-100 rounded px-1">trial</code> and at least one of <code class="text-[11px] bg-slate-100 rounded px-1">inclusion</code> / <code class="text-[11px] bg-slate-100 rounded px-1">exclusion</code>.</li>
+          <li><strong>Optional spreadsheet columns</strong>: <code class="text-[11px] bg-slate-100 rounded px-1">trial_id</code>, <code class="text-[11px] bg-slate-100 rounded px-1">care_path</code>, <code class="text-[11px] bg-slate-100 rounded px-1">active</code>, <code class="text-[11px] bg-slate-100 rounded px-1">status</code>, <code class="text-[11px] bg-slate-100 rounded px-1">condition</code>, <code class="text-[11px] bg-slate-100 rounded px-1">phase</code>, <code class="text-[11px] bg-slate-100 rounded px-1">study_type</code>, <code class="text-[11px] bg-slate-100 rounded px-1">indication</code>, <code class="text-[11px] bg-slate-100 rounded px-1">start_date</code>, <code class="text-[11px] bg-slate-100 rounded px-1">primary_completion_date</code>, <code class="text-[11px] bg-slate-100 rounded px-1">completion_date</code>.</li>
+          <li><strong>Use exact English headers</strong>: rename <code class="text-[11px] bg-slate-100 rounded px-1">trail</code> to <code class="text-[11px] bg-slate-100 rounded px-1">trial</code> and <code class="text-[11px] bg-slate-100 rounded px-1">care path</code> to <code class="text-[11px] bg-slate-100 rounded px-1">care_path</code>.</li>
           <li><strong>TrialGPT JSONL</strong>: one trial per line with <code class="text-[11px] bg-slate-100 rounded px-1">_id</code>, <code class="text-[11px] bg-slate-100 rounded px-1">title</code>, <code class="text-[11px] bg-slate-100 rounded px-1">metadata.inclusion_criteria</code>.</li>
           <li><strong>Org-specific JSON/JSONL</strong>: array of objects with <code class="text-[11px] bg-slate-100 rounded px-1">trial_id</code>, <code class="text-[11px] bg-slate-100 rounded px-1">criteria</code>, <code class="text-[11px] bg-slate-100 rounded px-1">care_path</code>.</li>
         </ul>
@@ -289,68 +307,72 @@
     <!-- ======================= MAIN PANE ======================= -->
     <main class="col-span-12 lg:col-span-9 space-y-4">
 
-      <!-- Hero: end-user-facing value props. No numbered steps here — those
-           belong to the "Start" sidebar, which is the actual flow. Each card
-           shows an icon + outcome, with a quieter "how" line underneath. -->
-      <section class="brand-panel rounded-2xl border p-5 shadow-sm">
-        <div class="flex items-center justify-between flex-wrap gap-2 mb-3">
-          <div class="max-w-2xl">
-            <h1 class="text-lg font-bold text-slate-900 tracking-tight">Make your trial eligibility ready for automated matching.</h1>
-            <p class="mt-1 text-xs text-slate-600">TrialSchema structures your eligibility criteria so matching tools and AI agents can apply them consistently — you stay in control and review every change.</p>
+      <!-- Setup -->
+      <section id="setupSection" class="space-y-3">
+        <div class="flex items-center justify-between gap-4">
+          <div>
+            <h1 class="text-base font-bold text-slate-900">Setup</h1>
+            <p class="text-xs text-slate-500">Optional controls that shape extraction before rows are processed.</p>
           </div>
-          <a href="schema.html" class="inline-flex items-center gap-1.5 text-[11px] font-semibold text-slate-500 hover:text-slate-900 bg-white/70 border border-slate-200 rounded-lg px-2.5 py-1.5">
+          <a href="schema.html" class="inline-flex items-center gap-1.5 text-[11px] font-semibold text-slate-500 hover:text-slate-900 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5">
             <svg viewBox="0 0 24 24" class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 3v5h5M7 3h7l5 5v13H7z M9 13h6M9 17h4" stroke-linecap="round"/></svg>
-            How it works
+            Schema
           </a>
         </div>
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
-          <!-- Benefit 1 -->
-          <div class="bg-white/85 backdrop-blur rounded-xl border border-slate-200 p-3.5">
-            <div class="flex items-center gap-2">
-              <span class="w-8 h-8 grid place-items-center rounded-lg" style="background:rgba(234,248,251,.95);color:var(--ts-navy)">
-                <svg viewBox="0 0 24 24" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l9 5-9 5-9-5 9-5z M3 13l9 5 9-5 M3 17l9 5 9-5" stroke-linejoin="round"/></svg>
-              </span>
-              <span class="text-sm font-semibold text-slate-900">Fewer missed matches</span>
-            </div>
-            <p class="mt-1.5 text-[12px] leading-snug text-slate-600">Vague wording like "locally advanced" or "HER2-low" is clarified into clear, checkable criteria.</p>
-          </div>
-          <!-- Benefit 2 -->
-          <div class="bg-white/85 backdrop-blur rounded-xl border border-slate-200 p-3.5">
-            <div class="flex items-center gap-2">
-              <span class="w-8 h-8 grid place-items-center rounded-lg" style="background:rgba(234,248,251,.95);color:var(--ts-teal)">
-                <svg viewBox="0 0 24 24" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 10c0 7-9 12-9 12s-9-5-9-12a9 9 0 0118 0z M12 13a3 3 0 100-6 3 3 0 000 6z" stroke-linejoin="round"/></svg>
-              </span>
-              <span class="text-sm font-semibold text-slate-900">Points to the right records</span>
-            </div>
-            <p class="mt-1.5 text-[12px] leading-snug text-slate-600">Each criterion notes where the answer lives — pathology, labs, imaging or MDT notes.</p>
-          </div>
-          <!-- Benefit 3 -->
-          <div class="bg-white/85 backdrop-blur rounded-xl border border-slate-200 p-3.5">
-            <div class="flex items-center gap-2">
-              <span class="w-8 h-8 grid place-items-center rounded-lg" style="background:rgba(168,227,207,.28);color:#117f6c">
-                <svg viewBox="0 0 24 24" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M13 2L4 14h7l-1 8 9-12h-7l1-8z" stroke-linejoin="round"/></svg>
-              </span>
-              <span class="text-sm font-semibold text-slate-900">Simple checks first</span>
-            </div>
-            <p class="mt-1.5 text-[12px] leading-snug text-slate-600">Quick criteria like age and lab values are checked first, so obvious mismatches drop out early.</p>
-          </div>
-        </div>
-      </section>
 
-      <!-- Routing profile: editable before extraction and exported with v1 -->
-      <section id="routingProfileSection" class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
-        <div class="flex items-start justify-between gap-4 flex-wrap">
-          <div>
-            <h2 class="text-base font-bold text-slate-900">Document Types &amp; Agent Visit Order</h2>
-            <p class="text-xs text-slate-500">This profile defines the documents the extractor may route to, the matrix columns, and the agent visit order. The document types marked <span class="font-semibold text-emerald-700">default scan</span> are searched for most criteria &mdash; adjust the set to fit your data (e.g. include pathology).</p>
-          </div>
-          <div class="flex items-center gap-2">
-            <button id="addRoutingDocBtn" type="button" class="text-xs font-semibold rounded-lg bg-slate-900 text-white px-3 py-1.5 hover:bg-slate-700">+ Add document</button>
-            <button id="resetRoutingProfileBtn" type="button" class="text-xs font-semibold rounded-lg border border-slate-200 bg-white text-slate-700 px-3 py-1.5 hover:bg-slate-50">Reset default</button>
-          </div>
+        <div class="space-y-3">
+          <!-- Routing profile: editable before extraction and exported with v1 -->
+          <details id="routingProfileSection" class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
+            <summary class="flex items-center justify-between gap-4">
+              <div>
+                <h2 class="text-sm font-bold text-slate-900">Document Types &amp; Visit Order</h2>
+                <p class="text-xs text-slate-500">Default scan set and agent record order.</p>
+              </div>
+              <svg viewBox="0 0 24 24" class="w-4 h-4 text-slate-400 transition-transform details-chevron" fill="none">
+                <path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              </svg>
+            </summary>
+            <div class="mt-3">
+              <div class="flex items-start justify-between gap-4 flex-wrap">
+                <p class="text-xs text-slate-500 max-w-3xl">Controls the documents the extractor may route to, the matrix columns, and the general agent visit order. The document types marked <span class="font-semibold text-emerald-700">default scan</span> are searched for most criteria.</p>
+                <div class="flex items-center gap-2">
+                  <button id="addRoutingDocBtn" type="button" class="text-xs font-semibold rounded-lg bg-slate-900 text-white px-3 py-1.5 hover:bg-slate-700">+ Add document</button>
+                  <button id="resetRoutingProfileBtn" type="button" class="text-xs font-semibold rounded-lg border border-slate-200 bg-white text-slate-700 px-3 py-1.5 hover:bg-slate-50">Reset default</button>
+                </div>
+              </div>
+              <div id="routingProfileStatus" class="mt-2 text-[11px] text-slate-500"></div>
+              <div id="routingProfileList" class="mt-3 space-y-2"></div>
+            </div>
+          </details>
+
+          <!-- Care Paths (clinical-domain enum) -->
+          <details id="carePathsSection" class="hidden bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
+            <summary class="flex items-center justify-between gap-4">
+              <div>
+                <h2 class="text-sm font-bold text-slate-900">Care Paths</h2>
+                <p class="text-xs text-slate-500">Clinical-domain buckets for matching.</p>
+              </div>
+              <svg viewBox="0 0 24 24" class="w-4 h-4 text-slate-400 transition-transform details-chevron" fill="none">
+                <path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              </svg>
+            </summary>
+            <div class="mt-3">
+              <div class="flex items-center justify-between gap-4 flex-wrap">
+                <p class="text-xs text-slate-500 max-w-3xl">Normalized clinical-domain enum used downstream for patient matching. Auto-detected from your upload and refined by the extractor; a trial can belong to several care paths.</p>
+                <div class="flex items-center gap-2">
+                  <button id="detectCarePathsBtn" class="inline-flex items-center gap-1.5 text-xs font-semibold rounded-lg bg-slate-900 text-white px-3 py-1.5 hover:bg-slate-700 disabled:opacity-50">
+                    <svg viewBox="0 0 24 24" class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1" stroke-linecap="round"/></svg>
+                    Detect from sample
+                  </button>
+                  <button id="addCarePathBtn" class="text-xs font-semibold rounded-lg border border-slate-200 bg-white text-slate-700 px-3 py-1.5 hover:bg-slate-50">+ Add</button>
+                  <button id="reassignCarePathsBtn" class="text-xs font-semibold rounded-lg border border-slate-200 bg-white text-slate-700 px-3 py-1.5 hover:bg-slate-50" title="Re-run alias-based assignment across all trials">Re-assign all</button>
+                </div>
+              </div>
+              <div id="carePathsStatus" class="mt-2 text-[11px] text-slate-500"></div>
+              <div id="carePathsList" class="mt-3 grid grid-cols-1 gap-2"></div>
+            </div>
+          </details>
         </div>
-        <div id="routingProfileStatus" class="mt-2 text-[11px] text-slate-500"></div>
-        <div id="routingProfileList" class="mt-3 space-y-2"></div>
       </section>
 
       <!-- Progress -->
@@ -361,7 +383,7 @@
         <div class="flex items-center justify-between gap-4">
           <div>
             <h2 class="text-base font-bold text-slate-900">Pipeline Progress</h2>
-            <p class="text-xs text-slate-500">Trial-by-trial extraction. Resume from an export to merge it with a newer raw upload &mdash; trials you already reviewed keep their manual edits, only new trials are processed.</p>
+            <p class="text-xs text-slate-500">Trial-by-trial extraction. A previous export can be continued alone or used to reuse reviewed edits when a newer upload has matching trial IDs.</p>
           </div>
           <div class="flex items-center gap-2 text-xs">
             <span class="badge bg-slate-100 text-slate-700"><span id="statTotal">0</span> total</span>
@@ -376,38 +398,10 @@
         </div>
         <div id="progressLabel" class="mt-2 text-[11px] text-slate-500">Idle.</div>
 
-        <div class="mt-4 flex items-center justify-end gap-2">
-          <button id="exportBtn" disabled class="brand-export-btn inline-flex items-center gap-2 text-white text-sm font-semibold rounded-xl px-3 py-2 disabled:opacity-50 disabled:cursor-not-allowed">
-            <svg viewBox="0 0 24 24" class="w-4 h-4" fill="none">
-              <path d="M12 3v12m0 0l-4-4m4 4l4-4M4 21h16" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-            Download Unified TrialSchema Export
-          </button>
-        </div>
-      </section>
-
-      <!-- Care Paths (clinical-domain enum) -->
-      <section id="carePathsSection" class="hidden bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
-        <div class="flex items-center justify-between gap-4 flex-wrap">
-          <div>
-            <h2 class="text-base font-bold text-slate-900">Care Paths</h2>
-            <p class="text-xs text-slate-500">Normalized clinical-domain enum used downstream for patient matching (e.g. <em>breast cancer</em>, <em>heart failure</em>, <em>type 2 diabetes</em>). Auto-detected from your upload, then refined by the extractor &mdash; a trial can belong to several care paths. Edits and assignments are saved with the export, so re-importing a previous export restores them.</p>
-          </div>
-          <div class="flex items-center gap-2">
-            <button id="detectCarePathsBtn" class="inline-flex items-center gap-1.5 text-xs font-semibold rounded-lg bg-slate-900 text-white px-3 py-1.5 hover:bg-slate-700 disabled:opacity-50">
-              <svg viewBox="0 0 24 24" class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1" stroke-linecap="round"/></svg>
-              Detect from sample
-            </button>
-            <button id="addCarePathBtn" class="text-xs font-semibold rounded-lg border border-slate-200 bg-white text-slate-700 px-3 py-1.5 hover:bg-slate-50">+ Add</button>
-            <button id="reassignCarePathsBtn" class="text-xs font-semibold rounded-lg border border-slate-200 bg-white text-slate-700 px-3 py-1.5 hover:bg-slate-50" title="Re-run alias-based assignment across all trials">Re-assign all</button>
-          </div>
-        </div>
-        <div id="carePathsStatus" class="mt-2 text-[11px] text-slate-500"></div>
-        <div id="carePathsList" class="mt-3 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2"></div>
       </section>
 
       <!-- Trials list -->
-      <section class="bg-white rounded-2xl border border-slate-200 shadow-sm">
+      <section id="trialsSection" class="bg-white rounded-2xl border border-slate-200 shadow-sm">
         <div class="flex items-center justify-between px-5 py-3 border-b border-slate-200">
           <h2 class="text-base font-bold text-slate-900">Trials</h2>
           <div class="flex items-center gap-2 text-xs">
@@ -426,6 +420,15 @@
           <div class="p-8 text-sm text-slate-500 text-center">No trials loaded yet. Auto-discover from <code>/ingestion/</code> or upload a file to begin.</div>
         </div>
       </section>
+
+      <section class="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm flex items-center justify-end">
+        <button id="exportBtn" disabled class="brand-export-btn inline-flex items-center gap-2 text-white text-sm font-semibold rounded-xl px-3 py-2 disabled:opacity-50 disabled:cursor-not-allowed">
+          <svg viewBox="0 0 24 24" class="w-4 h-4" fill="none">
+            <path d="M12 3v12m0 0l-4-4m4 4l4-4M4 21h16" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          Download Unified TrialSchema Export
+        </button>
+      </section>
     </main>
   </div>
 
@@ -437,7 +440,7 @@
   <template id="trialRowTpl">
     <details class="group">
       <summary class="px-5 py-3 flex items-center gap-3 hover:bg-slate-50">
-        <button type="button" data-active-toggle title="Toggle trial active / inactive"
+        <button type="button" data-active-toggle title="Toggle recruiting / not yet recruiting"
           class="shrink-0 w-7 h-7 rounded-md border text-[10px] font-bold transition flex items-center justify-center"></button>
         <span data-status class="badge"></span>
         <div class="min-w-0 flex-1">
@@ -448,6 +451,11 @@
           <div data-meta class="mt-0.5 text-[11px] text-slate-500 truncate"></div>
         </div>
         <span data-prov class="shrink-0 flex items-center gap-1"></span>
+        <span data-process-feedback class="hidden shrink-0 items-center gap-1.5 rounded-lg bg-blue-50 px-2 py-1 text-[11px] font-semibold text-blue-700">
+          <span class="ts-spinner h-3 w-3 rounded-full border-2 border-blue-200 border-t-blue-700"></span>
+          <span data-process-feedback-text>Structuring</span>
+        </span>
+        <button type="button" data-process-one class="hidden shrink-0 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed">Process</button>
         <span data-counts class="text-[11px] text-slate-500 hidden md:inline"></span>
         <svg viewBox="0 0 24 24" class="w-4 h-4 text-slate-400 transition-transform group-open:rotate-180" fill="none">
           <path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>

@@ -111,7 +111,7 @@
       "properties": {
         "id":          { "type": "string", "description": "Stable primary key. Typically an NCT id; any unique string is allowed.", "$comment": "FHIR R5: ResearchStudy.identifier (primary)." },
         "kind":        { "const": "trial" },
-        "enabled":     { "type": "boolean", "default": true, "description": "Whether the matcher should consider this trial. Independent of recruitment status." },
+        "enabled":     { "type": "boolean", "default": true, "description": "Whether the matcher should consider this trial now. In the UI this is paired with the simple Recruiting / Not yet recruiting toggle. It may be derived from an uploaded spreadsheet active/status column; recruitment lifecycle status remains the formal status field." },
         "title":       { "type": "string", "$comment": "FHIR R5: ResearchStudy.title." },
         "identifiers": { "type": "array", "items": { "$ref": "#/$defs/Identifier" }, "$comment": "FHIR R5: ResearchStudy.identifier." },
 
@@ -156,12 +156,12 @@
 
         "lifecycle": {
           "type": "object",
-          "$comment": "FHIR R5: ResearchStudy.status + ResearchStudy.period.",
+          "$comment": "FHIR R5: ResearchStudy.status + ResearchStudy.period. Optional; omit lifecycle entirely when source status and dates are unknown.",
           "additionalProperties": false,
           "properties": {
             "status": {
               "type": "string",
-              "description": "Recruitment / lifecycle status. FHIR ResearchStudy.status-aligned.",
+              "description": "Recruitment / lifecycle status. FHIR ResearchStudy.status-aligned. Omit when unknown rather than guessing.",
               "enum": [
                 "not-yet-recruiting",
                 "recruiting",
@@ -190,7 +190,7 @@
 
     "PartialDate": {
       "type": "string",
-      "description": "ISO-8601 date with optional precision: YYYY, YYYY-MM, or YYYY-MM-DD. Empty string means unknown.",
+      "description": "ISO-8601 date with optional precision: YYYY, YYYY-MM, or YYYY-MM-DD. Prefer omitting unknown dates from exported lifecycle objects; empty string is allowed for editable drafts.",
       "pattern": "^$|^\\d{4}(-\\d{2}(-\\d{2})?)?$"
     },
 
