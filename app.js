@@ -184,15 +184,6 @@ function inferBestProfileDoc(criterion) {
   return currentDocIds().find(id => id !== "other") || "other";
 }
 
-// Recruitment status normalization targets (Rule 4).
-const RECRUITMENT_STATES = [
-  "Unknown",
-  "Not yet recruiting",
-  "Recruiting",
-  "Active, not recruiting",
-  "Completed",
-];
-
 // Global app state ----------------------------------------------------------
 const state = {
   apiKey: "",
@@ -394,13 +385,9 @@ const SPREADSHEET_OPTIONAL_COLUMNS = [
   "trial_id",
   "care_path",
   "active",
-  "status",
   "condition",
-  "phase",
-  "study_type",
   "indication",
   "start_date",
-  "primary_completion_date",
   "completion_date",
 ];
 const SPREADSHEET_COLUMN_ALIASES = {
@@ -410,13 +397,9 @@ const SPREADSHEET_COLUMN_ALIASES = {
   inclusion: ["inclusion"],
   exclusion: ["exclusion"],
   active: ["active"],
-  status: ["status"],
   condition: ["condition"],
-  phase: ["phase"],
-  study_type: ["study_type"],
   indication: ["indication"],
   start_date: ["start_date"],
-  primary_completion_date: ["primary_completion_date"],
   completion_date: ["completion_date"],
 };
 
@@ -458,78 +441,52 @@ function normalizeSpreadsheetRow(row) {
     inclusion: spreadsheetCellString(get("inclusion")),
     exclusion: spreadsheetCellString(get("exclusion")),
     active: spreadsheetCellString(get("active")),
-    status: spreadsheetCellString(get("status")),
     condition: spreadsheetCellString(get("condition")),
-    phase: spreadsheetCellString(get("phase")),
-    study_type: spreadsheetCellString(get("study_type")),
     indication: spreadsheetCellString(get("indication")),
     start_date: spreadsheetCellString(get("start_date")),
-    primary_completion_date: spreadsheetCellString(get("primary_completion_date")),
     completion_date: spreadsheetCellString(get("completion_date")),
     _original_columns: row,
   };
 }
 
-function parseSpreadsheetActive(value) {
+function parseTrialEnabled(value) {
   const s = String(value ?? "").trim().toLowerCase();
   if (!s) return null;
-  if (["false", "no", "n", "0", "inactive", "inactief", "inactve", "inactvei", "disabled"].includes(s)) return false;
-  if (["true", "yes", "y", "1", "active", "enabled"].includes(s)) return true;
+  if (["false", "no", "n", "0", "inactive", "inactief", "disabled", "off"].includes(s)) return false;
+  if (["true", "yes", "y", "1", "active", "enabled", "on"].includes(s)) return true;
   return null;
 }
 
-function parseSpreadsheetStatus(value) {
-  const s = String(value ?? "").trim().toLowerCase();
-  if (!s) return "";
-  if (["not yet recruiting", "not-yet-recruiting", "planned", "pending"].includes(s)) return "Not yet recruiting";
-  if (["active", "recruiting", "open", "open to accrual", "enrolling", "enrolling by invitation"].includes(s)) return "Recruiting";
-  if (["active not recruiting", "active, not recruiting", "active-not-recruiting"].includes(s)) return "Active, not recruiting";
-  if (["inactive", "inactief", "inactve", "inactvei", "not active", "non-active", "non active"].includes(s)) return "Not yet recruiting";
-  if (["completed", "complete", "closed", "closed to accrual", "terminated", "withdrawn"].includes(s)) return "Completed";
-  return "Unknown";
+const INTERVENTION_TYPES = new Set(["drug", "device", "procedure", "biological", "behavioral", "radiation", "diagnostic-test", "other"]);
+
+function normalizeInterventionType(type) {
+  const s = String(type || "").trim().toLowerCase().replace(/[_\s]+/g, "-");
+  if (s === "diagnostic" || s === "diagnostic-test") return "diagnostic-test";
+  if (s === "biologic") return "biological";
+  return INTERVENTION_TYPES.has(s) ? s : "other";
 }
 
-function normalizeRecruitmentStatus(value) {
-  const raw = String(value ?? "").trim();
-  if (RECRUITMENT_STATES.includes(raw)) return raw;
-  const s = raw.toLowerCase().replace(/_/g, "-");
-  if (["unknown", "n/a", "na", "not available"].includes(s)) return "Unknown";
-  if (["not-yet-recruiting"].includes(s)) return "Not yet recruiting";
-  if (["recruiting", "enrolling-by-invitation"].includes(s)) return "Recruiting";
-  if (["active"].includes(s)) return "Recruiting";
-  if (["active-not-recruiting"].includes(s)) return "Active, not recruiting";
-  if (["inactive", "inactief", "not-active", "non-active"].includes(s)) return "Not yet recruiting";
-  if (["completed", "terminated", "withdrawn", "closed"].includes(s)) return "Completed";
-  return parseSpreadsheetStatus(raw) || "Unknown";
+function normalizeMetadataInterventions(m = {}) {
+  const structured = Array.isArray(m.interventions) ? m.interventions.map(iv => {
+    if (typeof iv === "string") return { type: "other", label: iv };
+    return {
+      type: normalizeInterventionType(iv?.type),
+      label: String(iv?.label || iv?.name || "").trim(),
+    };
+  }).filter(iv => iv.label) : [];
+  const seen = new Set(structured.map(iv => iv.label.toLowerCase()));
+  (Array.isArray(m.drugs) ? m.drugs : []).map(String).map(s => s.trim()).filter(Boolean).forEach(label => {
+    const key = label.toLowerCase();
+    if (!seen.has(key)) {
+      structured.push({ type: "drug", label });
+      seen.add(key);
+    }
+  });
+  return structured;
 }
 
-function inferActiveFromSpreadsheetStatus(value) {
-  const s = String(value ?? "").trim().toLowerCase();
-  if (!s) return null;
-  if ([
-    "inactive", "inactief", "inactve", "inactvei", "not active", "non-active", "non active",
-    "disabled", "false", "no", "n", "0",
-    "not yet recruiting", "not-yet-recruiting", "planned", "pending",
-    "completed", "complete", "closed", "closed to accrual", "terminated", "withdrawn",
-  ].includes(s)) return false;
-  if ([
-    "active", "enabled", "true", "yes", "y", "1",
-    "recruiting", "open", "open to accrual", "enrolling", "enrolling by invitation",
-    "active not recruiting", "active, not recruiting", "active-not-recruiting",
-  ].includes(s)) return true;
-  const status = parseSpreadsheetStatus(s);
-  if (!status || status === "Unknown") return null;
-  return status === "Completed" ? false : true;
-}
-
-function spreadsheetActiveState(row) {
-  const explicit = parseSpreadsheetActive(row?.active);
-  const fromStatus = inferActiveFromSpreadsheetStatus(row?.status);
-  // Any clear inactive/closed signal wins, so a status column saying inactive
-  // cannot be displayed as Active because another optional flag was true/stale.
-  if (explicit === false || fromStatus === false) return false;
-  if (explicit === true || fromStatus === true) return true;
-  return null;
+function interventionDisplayNames(m = {}) {
+  return normalizeMetadataInterventions(m).map(iv => iv.label);
 }
 
 function spreadsheetFormatHelpHtml() {
@@ -545,7 +502,7 @@ function detectFormat(filename, sampleRow) {
   const ext = (filename || "").toLowerCase().split(".").pop();
   if (ext === "xlsx" || ext === "xls" || ext === "csv") return "spreadsheet";
   const r = sampleRow || {};
-  if (r.format === TS_V1.FORMAT || (r.kind === "trial" && "enabled" in r && "criteria" in r)) return "trialschema";
+  if (r.format === TS_V1.FORMAT || (r.kind === "trial" && "criteria" in r)) return "trialschema";
   // ClinicalTrials.gov API v2 study record (or top-level wrapper unwrapped already).
   if (r.protocolSection && (r.protocolSection.identificationModule || r.protocolSection.eligibilityModule)) return "ctgov";
   if ("_id" in r || (r.metadata && ("inclusion_criteria" in r.metadata || "brief_title" in r.metadata))) return "trialgpt";
@@ -753,8 +710,7 @@ function formatBytes(n) {
 
 const TEMPLATE_HEADERS = [
   "trial_id", "trial", "care_path", "inclusion", "exclusion",
-  "active", "status", "condition", "phase", "study_type", "indication",
-  "start_date", "primary_completion_date", "completion_date",
+  "active", "condition", "indication", "start_date", "completion_date",
 ];
 const TEMPLATE_EXAMPLE_ROW = {
   trial_id: "EXAMPLE-01",
@@ -763,13 +719,9 @@ const TEMPLATE_EXAMPLE_ROW = {
   inclusion: "Histologically confirmed disease\nAge >= 18 years\nECOG 0-2",
   exclusion: "Distant metastases\nPregnancy or lactation",
   active: "true",
-  status: "Recruiting",
   condition: "Breast cancer",
-  phase: "Phase 2",
-  study_type: "Interventional",
   indication: "Locally advanced disease",
   start_date: "",
-  primary_completion_date: "",
   completion_date: "",
 };
 const TEMPLATE_COLUMN_GUIDE = [
@@ -778,15 +730,11 @@ const TEMPLATE_COLUMN_GUIDE = [
   { column: "exclusion", required: "one of inclusion/exclusion", description: "Exclusion criteria. Put one criterion per line when possible." },
   { column: "trial_id", required: "no", description: "Stable id such as NCT id or local study id." },
   { column: "care_path", required: "no", description: "Clinical-domain bucket or comma-separated buckets, e.g. breast_cancer." },
-  { column: "active", required: "no", description: "true/false, yes/no, 1/0. true means Recruiting; false means Not yet recruiting." },
-  { column: "status", required: "no", description: "Recruitment status if known. Bare active means Recruiting; inactive means Not yet recruiting." },
-  { column: "condition", required: "no", description: "Disease, tumor group, or condition." },
-  { column: "phase", required: "no", description: "Trial phase." },
-  { column: "study_type", required: "no", description: "Interventional, observational, registry, etc." },
+  { column: "active", required: "no", description: "true/false. Local TrialSchema matching switch; false means agents should skip the trial." },
+  { column: "condition", required: "no", description: "ClinicalTrials.gov-style condition: primary condition, diagnosis, disorder, or focus of study." },
   { column: "indication", required: "no", description: "Specific indication or setting." },
-  { column: "start_date", required: "no", description: "YYYY-MM-DD. Leave blank if unknown." },
-  { column: "primary_completion_date", required: "no", description: "YYYY-MM-DD. Leave blank if unknown." },
-  { column: "completion_date", required: "no", description: "YYYY-MM-DD. Leave blank if unknown." },
+  { column: "start_date", required: "no", description: "YYYY-MM-DD. Matching window open date; leave blank if unknown." },
+  { column: "completion_date", required: "no", description: "YYYY-MM-DD. Matching window close date; leave blank if unknown." },
 ];
 
 function downloadTemplate(kind) {
@@ -811,9 +759,9 @@ function downloadTemplate(kind) {
       text: "Summary: Brief summary text here.\nInclusion criteria:\n- Rule A\n- Rule B\nExclusion criteria:\n- Rule C",
       metadata: {
         brief_title: "Example trial",
-        phase: "Phase 2",
         drugs: ["DrugX"],
-        diseases: ["Disease Y"],
+        interventions: [{ type: "drug", label: "DrugX" }],
+        conditions: ["Condition Y"],
         inclusion_criteria: "Histologically confirmed disease\nAge ≥ 18 years",
         exclusion_criteria: "Pregnancy or lactation",
       },
@@ -881,7 +829,7 @@ function parseTextByExt(name, text) {
       else if (Array.isArray(j.studies)) arr = j.studies;
       else if (j.protocolSection) arr = [j];
       else arr = j.trials || j.data || [];
-      if (arr.length && arr[0]?.kind === "trial" && "enabled" in arr[0]) {
+      if (arr.length && arr[0]?.kind === "trial" && "criteria" in arr[0]) {
         return arr.map(fromV1Trial).map(t => ({ __raw: t, __sourceFormat: "trialschema", __structuredTrial: t }));
       }
       return arr.map(wrapRaw);
@@ -907,22 +855,19 @@ function previewIdAndTitle(raw) {
     return {
       id: r.trial_id || r.trial || cryptoSlug(JSON.stringify(r).slice(0, 80)),
       title: r.trial || "(Untitled trial)",
-      meta: [r.condition, r.indication, r.status].filter(Boolean).join(" • "),
+    meta: [r.condition, r.indication].filter(Boolean).join(" • "),
     };
   }
   if (state.format === "ctgov" || raw.__sourceFormat === "ctgov") {
     const ps = raw.__raw?.protocolSection || {};
     const idm = ps.identificationModule || {};
     const sm  = ps.statusModule || {};
-    const dm  = ps.designModule || {};
     const cm  = ps.conditionsModule || {};
     return {
       id: idm.nctId || cryptoSlug(JSON.stringify(raw.__raw).slice(0, 80)),
       title: idm.briefTitle || idm.officialTitle || "(CT.gov trial)",
       meta: [
-        (dm.phases || [])[0],
         (cm.conditions || [])[0],
-        sm.overallStatus,
       ].filter(Boolean).join(" • "),
     };
   }
@@ -931,7 +876,7 @@ function previewIdAndTitle(raw) {
   return {
     id: r._id || r.trial_id || r.NCTId || cryptoSlug(JSON.stringify(r).slice(0, 80)),
     title: r.title || m.brief_title || "(Untitled trial)",
-    meta: [m.phase, (m.diseases_list || m.diseases || []).join?.(", "), m.enrollment].filter(Boolean).join(" • "),
+    meta: [(m.conditions || []).join?.(", ")].filter(Boolean).join(" • "),
   };
 }
 
@@ -953,12 +898,7 @@ function classifyRows(rawRows) {
     const reused = direct || (state.existingById[id]
       ? applySpreadsheetSourceFields(sanitizeTrial(JSON.parse(JSON.stringify(state.existingById[id]))), row)
       : null);
-    const activeHint = row.__sourceFormat === "spreadsheet"
-      ? spreadsheetActiveState(row.__raw)
-      : null;
-    const recruitmentHint = row.__sourceFormat === "spreadsheet"
-      ? normalizeRecruitmentStatus(row.__raw?.status) || ""
-      : "";
+    const enabledHint = row.__sourceFormat === "spreadsheet" ? parseTrialEnabled(row.__raw?.active) : null;
     return {
       idx: i,
       preview: { id, title, meta },
@@ -966,8 +906,7 @@ function classifyRows(rawRows) {
       status: reused ? "reused" : "pending",
       result: reused || null,
       error: null,
-      userActive: activeHint === false ? false : undefined,
-      userRecruitmentStatus: recruitmentHint !== "Unknown" ? recruitmentHint : (activeHint === false ? "Not yet recruiting" : activeHint === true ? "Recruiting" : undefined),
+      userEnabled: enabledHint,
     };
   });
 }
@@ -1052,14 +991,13 @@ WITHOUT re-reading the original_text.
 
 RULE 3 - CROSS-LINGUAL TRANSLATION & STANDARDIZATION.
 If the input contains any non-English clinical text, interpret it natively but translate
-ALL output strings (criteria text, diseases, phase, status, descriptions) cleanly into
+ALL output strings (criteria text, conditions, descriptions) cleanly into
 English. Preserve clinical precision.
 
-RULE 4 - OPERATIONAL STATUS & ISO DATE NORMALIZATION.
-metadata.recruitment_status MUST be exactly one of:
-  "Unknown", "Not yet recruiting", "Recruiting", "Active, not recruiting", "Completed".
-Use "Unknown" when no source status is provided. All lifecycle dates must be
-"YYYY-MM-DD" strings or "" if unknown; never invent dates.
+RULE 4 - MATCHING WINDOW DATE NORMALIZATION.
+lifecycle_dates.start_date and lifecycle_dates.completion_date represent the trial's
+matching window. Use "YYYY-MM-DD" or "" and never invent dates. Do not output a
+trial status field; future planning is handled by dates, not a binary status.
 
 RULE 5 - CRITERION CATEGORY (CLOSED VOCABULARY).
 The "category" field on every criterion MUST be exactly ONE of these lower-case tokens:
@@ -1082,6 +1020,8 @@ Use the active routing profile's general visit order as a tie-breaker inside eac
 RULE 7 - NORMALIZED CARE PATHS (CLINICAL-DOMAIN BUCKETS).
 A trial may belong to ONE OR MORE normalized care paths (clinical-domain buckets used
 downstream for patient matching, e.g. breast_cancer, heart_failure, type_2_diabetes).
+This is a first-pass matching filter: downstream agents should evaluate the trial's criteria
+only when the patient care path matches at least one returned care_path_id.
 ${state.carePaths.length
   ? `Choose care_path_ids ONLY from the active enum below, using the snake_case ids exactly as shown.
 Match across languages and synonyms (Dutch "borst"/"mamma" -> breast_cancer, "hartfalen" -> heart_failure).
@@ -1090,29 +1030,28 @@ list several). Return [] when none of the enum entries fit.
 ${carePathPromptBlock()}`
   : `No care-path enum is configured yet, so return care_path_ids as an empty array [].`}
 
+RULE 8 - TRIAL SCOPE VS ELIGIBILITY CRITERIA.
+Conditions, interventions/drugs, and care_path_ids describe what the trial is about.
+Put them in metadata / care_path_ids as trial-level scope. Do NOT create an inclusion or exclusion
+criterion merely because a condition or drug appears in the title, condition list, arm list, or care-path
+hint. Create a criterion only when the eligibility text says a patient must have, must not have, must
+previously have received, or must avoid that condition/intervention.
+
 OUTPUT SHAPE - return EXACTLY this JSON structure (no extra keys, no commentary):
 {
   "trial_id": "string",
-  "active": true,
+  "enabled": true,
   "metadata": {
     "brief_title": "string",
-    "phase": "string",
     "drugs": ["string"],
-    "diseases": ["string"],
-    "enrollment_target": 0,
-    "recruitment_status": "Unknown",
+    "interventions": [{ "type": "drug|device|procedure|biological|behavioral|radiation|diagnostic-test|other", "label": "string" }],
+    "conditions": ["string"],
     "lifecycle_dates": {
       "start_date": "",
-      "primary_completion_date": "",
-      "actual_close_date": ""
+      "completion_date": ""
     }
   },
   "care_path_ids": [],
-  "care_path": {
-    "phases": [
-      { "phase_name": "string", "description": "string", "duration": "string", "key_activities": ["string"] }
-    ]
-  },
   "criteria": [
     {
       "criterion_id": "INC-01",
@@ -1136,13 +1075,8 @@ OUTPUT SHAPE - return EXACTLY this JSON structure (no extra keys, no commentary)
 Use "INC-01"... for inclusion criteria and "EXC-01"... for exclusion.
 status defaults to "active". priority_level is the DAG funnel tier (Rule 6): 1 = structured
 EHR knock-out, 2 = unstructured high-yield, 3 = timeline / cross-doc, 4 = other / soft, 5 = unranked.
-care_path is OPTIONAL. Emit it ONLY when the trial implies a recognised standard clinical pathway
-(e.g. oncology / radiation-oncology, structured chronic-disease management like heart-failure or
-diabetes pathways, transplant pathways). When you do emit one, populate at least one phase. When the
-trial does not map to a clear pathway (early-phase healthy-volunteer studies, single-encounter
-device studies, etc.), set care_path to null and move on.
 care_path_ids is the normalized clinical-domain bucket assignment (Rule 7) — an array of enum
-ids; [] when no enum entry applies. It is independent of the optional care_path phase timeline.
+ids; [] when no enum entry applies.
 Return ONLY the JSON object - no markdown fences, no explanations.`;
 }
 
@@ -1153,11 +1087,10 @@ function buildUserPrompt(raw) {
     return [
       "SOURCE FORMAT: English spreadsheet row.",
       "Minimum expected fields are `trial` plus at least one of `inclusion` or `exclusion`.",
-      "Optional fields include `trial_id`, `care_path`, `active`, `status`, `condition`, `phase`, `study_type`, `indication`, `start_date`, `primary_completion_date`, and `completion_date`.",
+      "Optional fields include `trial_id`, `care_path`, `active`, `condition`, `indication`, `start_date`, and `completion_date`.",
       "Use `trial_id` when present; otherwise derive trial_id from `trial`.",
-      "Use `active` as the trial-level recruitment toggle. true/active means `Recruiting`; false/inactive means `Not yet recruiting`.",
-      "Use `status` for recruitment_status. Bare `active` means `Recruiting`; bare `inactive` means `Not yet recruiting` and should set the trial-level active flag to false.",
-      "Use date fields only when provided; leave missing dates as empty strings.",
+      "Use `active` as the local TrialSchema matching switch. true/active means enabled=true; false/inactive means enabled=false.",
+      "Use `start_date` and `completion_date` as matching-window dates only when provided; leave missing dates as empty strings.",
       "If `care_path` is present, use it as a strong hint for care_path_ids.",
       "Parse one Criterion per line/bullet from `inclusion` and `exclusion`.",
       "Normalized row:",
@@ -1191,43 +1124,13 @@ function buildUserPrompt(raw) {
 }
 
 // ----- CT.gov v2 helpers -----------------------------------------------------
-// Map CT.gov phase enum (e.g. "PHASE3", "EARLY_PHASE1") to TrialSchema phase strings.
-const CTGOV_PHASE_MAP = {
-  "EARLY_PHASE1": "Early Phase 1",
-  "PHASE1":      "Phase 1",
-  "PHASE1_2":    "Phase 1/Phase 2",
-  "PHASE2":      "Phase 2",
-  "PHASE2_3":    "Phase 2/Phase 3",
-  "PHASE3":      "Phase 3",
-  "PHASE4":      "Phase 4",
-  "NA":          "N/A",
-};
-// Map CT.gov overallStatus to TrialSchema lifecycle status (RULE 4 enum).
-const CTGOV_STATUS_MAP = {
-  "NOT_YET_RECRUITING":     "not_yet_recruiting",
-  "RECRUITING":             "recruiting",
-  "ENROLLING_BY_INVITATION":"recruiting",
-  "ACTIVE_NOT_RECRUITING":  "active_not_recruiting",
-  "COMPLETED":              "completed",
-  "SUSPENDED":              "suspended",
-  "TERMINATED":             "terminated",
-  "WITHDRAWN":              "withdrawn",
-  "UNKNOWN":                "unknown",
-};
-
 function buildCtgovPrompt(study) {
   const ps  = study?.protocolSection || {};
   const idm = ps.identificationModule || {};
   const sm  = ps.statusModule || {};
-  const dm  = ps.designModule || {};
   const cm  = ps.conditionsModule || {};
   const aim = ps.armsInterventionsModule || {};
   const elm = ps.eligibilityModule || {};
-  const spm = ps.sponsorCollaboratorsModule || {};
-
-  const phaseRaw = (dm.phases || [])[0];
-  const phase    = phaseRaw ? (CTGOV_PHASE_MAP[phaseRaw] || phaseRaw) : "";
-  const status   = CTGOV_STATUS_MAP[sm.overallStatus] || "unknown";
 
   const interventions = (aim.interventions || []).map(iv => ({
     type: (iv.type || "").toLowerCase(), // drug | device | procedure | behavioral | ...
@@ -1239,17 +1142,12 @@ function buildCtgovPrompt(study) {
     metadata: {
       brief_title:        idm.briefTitle || "",
       official_title:     idm.officialTitle || "",
-      phase,
-      diseases:           cm.conditions || [],
+      conditions:         cm.conditions || [],
       drugs:              interventions.filter(i => i.type === "drug").map(i => i.name),
       interventions,
-      enrollment_target:  dm.enrollmentInfo?.count ?? null,
-      sponsor:            spm.leadSponsor?.name || "",
-      lifecycle: {
-        status,
-        start_date:               sm.startDateStruct?.date || "",
-        primary_completion_date:  sm.primaryCompletionDateStruct?.date || "",
-        completion_date:          sm.completionDateStruct?.date || "",
+      lifecycle_dates: {
+        start_date:      sm.startDateStruct?.date || "",
+        completion_date: sm.completionDateStruct?.date || "",
       },
       eligibility_demographics: {
         sex:               elm.sex || "ALL",
@@ -1267,7 +1165,7 @@ function buildCtgovPrompt(study) {
     "",
     "DETERMINISTIC PRE-EXTRACTION (already done from `protocolSection`).",
     "Use these values verbatim for trial_id and metadata. DO NOT rewrite, translate, or re-derive them.",
-    "Your job is to produce the structured `criteria` array (and `care_path`) by parsing the eligibility text.",
+    "Your job is to produce the structured `criteria` array by parsing the eligibility text.",
     "",
     "Pre-extracted fields:",
     "```json",
@@ -1329,21 +1227,14 @@ function applySpreadsheetSourceFields(trial, raw) {
   trial.metadata = trial.metadata || {};
   const m = trial.metadata;
   if (!m.brief_title && row.trial) m.brief_title = row.trial;
-  if (row.phase) m.phase = row.phase;
   const condition = [row.condition, row.indication].map(s => String(s || "").trim()).filter(Boolean);
-  if (condition.length && !(m.diseases || []).length) m.diseases = condition;
+  if (condition.length && !(m.conditions || []).length) m.conditions = condition;
 
-  const active = spreadsheetActiveState(row);
-  const statusFromSource = normalizeRecruitmentStatus(row.status);
-  m.recruitment_status = statusFromSource !== "Unknown"
-    ? statusFromSource
-    : (active === true ? "Recruiting" : active === false ? "Not yet recruiting" : "Unknown");
+  const enabled = parseTrialEnabled(row.active);
+  if (enabled !== null) trial.enabled = enabled;
   m.lifecycle_dates = m.lifecycle_dates || {};
   m.lifecycle_dates.start_date = isoDate(row.start_date);
-  m.lifecycle_dates.primary_completion_date = isoDate(row.primary_completion_date);
-  m.lifecycle_dates.actual_close_date = isoDate(row.completion_date);
-
-  if (active !== null) trial.active = active;
+  m.lifecycle_dates.completion_date = isoDate(row.completion_date);
   return trial;
 }
 
@@ -1351,27 +1242,16 @@ function applySpreadsheetSourceFields(trial, raw) {
 function sanitizeTrial(t) {
   if (!t || typeof t !== "object") t = {};
   t.trial_id = String(t.trial_id || cryptoSlug(JSON.stringify(t).slice(0, 64)));
+  t.enabled = t.enabled === false ? false : true;
   t.metadata = t.metadata || {};
   const m = t.metadata;
   m.brief_title = String(m.brief_title || "");
-  m.phase = String(m.phase || "");
   m.drugs = Array.isArray(m.drugs) ? m.drugs.map(String) : [];
-  m.diseases = Array.isArray(m.diseases) ? m.diseases.map(String) : [];
-  m.enrollment_target = Number.isFinite(+m.enrollment_target) ? +m.enrollment_target : 0;
-  m.recruitment_status = normalizeRecruitmentStatus(m.recruitment_status);
+  m.interventions = normalizeMetadataInterventions(m);
+  m.conditions = Array.isArray(m.conditions) ? m.conditions.map(String) : [];
   m.lifecycle_dates = m.lifecycle_dates || {};
-  ["start_date", "primary_completion_date", "actual_close_date"].forEach(k => {
-    m.lifecycle_dates[k] = isoDate(m.lifecycle_dates[k]);
-  });
-
-  t.care_path = t.care_path || { phases: [] };
-  if (!Array.isArray(t.care_path.phases)) t.care_path.phases = [];
-  t.care_path.phases = t.care_path.phases.map(p => ({
-    phase_name: String(p?.phase_name || ""),
-    description: String(p?.description || ""),
-    duration: String(p?.duration || ""),
-    key_activities: Array.isArray(p?.key_activities) ? p.key_activities.map(String) : [],
-  }));
+  m.lifecycle_dates.start_date = isoDate(m.lifecycle_dates.start_date);
+  m.lifecycle_dates.completion_date = isoDate(m.lifecycle_dates.completion_date);
 
   if (!Array.isArray(t.criteria)) t.criteria = [];
   t.criteria = t.criteria.map((c, i) => sanitizeCriterion(c, i));
@@ -1390,9 +1270,6 @@ function sanitizeTrial(t) {
   // (or all provided ids when the enum is still empty, so nothing is lost before
   // detection runs).
   t.care_path_ids = normalizeCarePathIds(Array.isArray(t.care_path_ids) ? t.care_path_ids : []);
-  // Trial-level active flag. Inactive trials are still exported but flagged so
-  // the downstream matcher can skip them. Defaults to true.
-  t.active = (t.active === false) ? false : true;
   // Edit-state provenance. Tracks whether the trial was produced/updated by AI
   // and whether a human hand-edited it in the workspace. Persisted on export
   // and restored on import so manual work is never lost or repeated.
@@ -1645,29 +1522,19 @@ async function processTrialAtIndex(i, processed, total) {
     renderRow(it, i);
     applySpreadsheetSourceFields(result, it.raw);
     if (!result.trial_id || result.trial_id === "string") result.trial_id = it.preview.id;
-    if (it.userRecruitmentStatus) {
-      result.metadata = result.metadata || {};
-      result.metadata.recruitment_status = it.userRecruitmentStatus;
-      result.active = it.userRecruitmentStatus === "Recruiting";
-    } else if (it.userActive === false) {
-      result.active = false;
-      result.metadata = result.metadata || {};
-      if (!result.metadata.recruitment_status || result.metadata.recruitment_status === "Unknown") {
-        result.metadata.recruitment_status = "Not yet recruiting";
-      }
-    }
+    if (typeof it.userEnabled === "boolean") result.enabled = it.userEnabled;
     markTrialAI(result, `openai/${state.model}`);
     it.result = result;
     it.status = "done";
     state.results[i] = result;
     state.resultsById[result.trial_id] = result;
     let inferred = inferCarePathIds(result);
-    const diseaseCarePathIds = (!rawCarePathIds.length && !inferred.length) ? ensureCarePathsFromTrial(result) : [];
-    if (diseaseCarePathIds.length) inferred = inferCarePathIds(result);
+    const conditionCarePathIds = (!rawCarePathIds.length && !inferred.length) ? ensureCarePathsFromTrial(result) : [];
+    if (conditionCarePathIds.length) inferred = inferCarePathIds(result);
     result.care_path_ids = normalizeCarePathIds([
       ...(result.care_path_ids || []),
       ...rawCarePathIds,
-      ...diseaseCarePathIds,
+      ...conditionCarePathIds,
       ...inferred,
     ]);
   } catch (e) {
@@ -2168,16 +2035,14 @@ function buildRow(it, i) {
   const tpl = document.getElementById("trialRowTpl").content.cloneNode(true);
   const root = tpl.querySelector("details");
   root.dataset.idx = i;
-  // Wire the trial-level active toggle (works pre- or post-LLM extraction).
-  const toggle = root.querySelector("[data-active-toggle]");
-  if (toggle) {
-    // Stop the click from bubbling up and toggling the <details> open/close.
-    toggle.addEventListener("click", (e) => {
+  const enabledToggle = root.querySelector("[data-trial-enabled-toggle]");
+  if (enabledToggle) {
+    enabledToggle.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
-      const nextRecruiting = !isTrialRecruiting(it);
-      setTrialRecruitmentState(it, nextRecruiting);
+      setTrialEnabled(it, !isTrialEnabled(it));
       updateRow(root, it);
+      if (root.open) renderBody(root.querySelector("[data-body]"), it, i);
     });
   }
   const oneBtn = root.querySelector("[data-process-one]");
@@ -2204,40 +2069,32 @@ function renderRow(it, i) {
   if (root.open) renderBody(root.querySelector("[data-body]"), it, i);
 }
 
-function isTrialRecruiting(it) {
-  const status = it.result?.metadata?.recruitment_status || it.userRecruitmentStatus || "";
-  if (status === "Not yet recruiting") return false;
-  if (status === "Completed") return false;
-  return it.result ? it.result.active !== false : it.userActive !== false;
+function isTrialEnabled(it) {
+  if (it.result) return it.result.enabled !== false;
+  return it.userEnabled !== false;
 }
 
-function setTrialRecruitmentState(it, recruiting) {
-  const status = recruiting ? "Recruiting" : "Not yet recruiting";
+function setTrialEnabled(it, enabled) {
   if (it.result) {
-    it.result.active = recruiting;
-    it.result.metadata = it.result.metadata || {};
-    it.result.metadata.recruitment_status = status;
+    it.result.enabled = !!enabled;
     markTrialEdited(it.result);
   } else {
-    it.userActive = recruiting;
-    it.userRecruitmentStatus = status;
+    it.userEnabled = !!enabled;
   }
 }
 
 function updateRow(root, it) {
-  // Recruitment toggle visual state. Defaults to recruiting when unknown.
-  const toggle = root.querySelector("[data-active-toggle]");
-  if (toggle) {
-    const recruiting = isTrialRecruiting(it);
-    toggle.title = recruiting ? "Recruiting — click to mark not yet recruiting" : "Not yet recruiting — click to mark recruiting";
-    toggle.className = "shrink-0 min-w-28 h-7 rounded-md border text-[10px] font-bold transition flex items-center justify-center px-2 " + (
-      recruiting
+  const enabledToggle = root.querySelector("[data-trial-enabled-toggle]");
+  if (enabledToggle) {
+    const enabled = isTrialEnabled(it);
+    enabledToggle.title = enabled ? "Active for matching — click to deactivate" : "Inactive for matching — click to activate";
+    enabledToggle.className = "shrink-0 min-w-20 h-7 rounded-md border text-[10px] font-bold transition flex items-center justify-center px-2 " + (
+      enabled
         ? "bg-emerald-500 text-white border-emerald-500 hover:bg-emerald-600"
-        : "bg-white text-slate-300 border-slate-300 hover:border-slate-400"
+        : "bg-white text-slate-400 border-slate-300 hover:border-slate-400"
     );
-    toggle.textContent = recruiting ? "Recruiting" : "Not yet";
-    // Dim the rest of the summary when inactive.
-    root.classList.toggle("opacity-60", !recruiting);
+    enabledToggle.textContent = enabled ? "Active" : "Inactive";
+    root.classList.toggle("opacity-60", !enabled);
   }
   root.querySelector("[data-status]").outerHTML =
     statusBadge(it.status).replace("<span ", `<span data-status `);
@@ -2245,8 +2102,8 @@ function updateRow(root, it) {
   root.querySelector("[data-title]").textContent = it.preview.title;
   const meta = it.error ? `Error: ${it.error}` : (it.preview.meta || "");
   root.querySelector("[data-meta]").textContent = meta;
-  // Show #active criteria / total alongside phase count so users can see at a
-  // glance how many criteria are still in play after manual deactivations.
+  // Show #active criteria / total so users can see how many criteria are still
+  // in play after manual deactivations.
   let counts = "";
   if (it.result?.criteria) {
     const total = it.result.criteria.length;
@@ -2314,38 +2171,40 @@ function renderBody(host, it, i) {
 
   const m = t.metadata || {};
   const ld = m.lifecycle_dates || {};
-  const recOptions = RECRUITMENT_STATES.map(s =>
-    `<option value="${escapeHtml(s)}"${m.recruitment_status === s ? " selected" : ""}>${escapeHtml(s)}</option>`
-  ).join("");
   host.innerHTML = manualPanel + `
     <div class="grid grid-cols-1 gap-4 mt-3">
-      <!-- Metadata card (editable) -->
+      <!-- Overview card (editable) -->
       <div class="bg-white rounded-xl border border-slate-200 p-4" data-meta-card>
         <div class="flex items-center justify-between">
-          <h3 class="text-xs font-bold uppercase tracking-wider text-slate-500">Trial Metadata</h3>
+          <h3 class="text-xs font-bold uppercase tracking-wider text-slate-500">Trial Overview</h3>
           <span class="text-[10px] text-slate-400 italic">Click any field to edit</span>
         </div>
         <input type="text" data-mfield="brief_title" value="${escapeHtml(m.brief_title||"")}" placeholder="Brief title"
           class="mt-2 w-full text-sm font-semibold text-slate-900 bg-transparent border-b border-transparent hover:border-slate-200 focus:border-blue-400 focus:outline-none px-0 py-1"/>
-        <div class="mt-2 grid grid-cols-2 gap-y-1.5 gap-x-3 text-[12px]">
-          <label class="text-slate-500 self-center">Phase</label>
-          <input type="text" data-mfield="phase" value="${escapeHtml(m.phase||"")}" class="meta-input"/>
-          <label class="text-slate-500 self-center">Recruitment</label>
-          <select data-mfield="recruitment_status" class="meta-input">${recOptions}</select>
-          <label class="text-slate-500 self-center">Enrollment</label>
-          <input type="number" data-mfield="enrollment_target" value="${m.enrollment_target ?? ""}" class="meta-input"/>
-          <label class="text-slate-500 self-center">Drugs</label>
-          <input type="text" data-mfield="drugs" data-mlist="1" value="${escapeHtml((m.drugs||[]).join(", "))}" placeholder="comma-separated" class="meta-input"/>
-          <label class="text-slate-500 self-center">Diseases</label>
-          <input type="text" data-mfield="diseases" data-mlist="1" value="${escapeHtml((m.diseases||[]).join(", "))}" placeholder="comma-separated" class="meta-input"/>
-          <label class="text-slate-500 self-center">Care paths</label>
-          <div data-cp-editor>${carePathChipsHtml(t.care_path_ids || [])}</div>
-          <label class="text-slate-500 self-center">Start</label>
-          <input type="date" data-mfield="lifecycle_dates.start_date" value="${escapeHtml(ld.start_date||"")}" class="meta-input"/>
-          <label class="text-slate-500 self-center">Primary close</label>
-          <input type="date" data-mfield="lifecycle_dates.primary_completion_date" value="${escapeHtml(ld.primary_completion_date||"")}" class="meta-input"/>
-          <label class="text-slate-500 self-center">Actual close</label>
-          <input type="date" data-mfield="lifecycle_dates.actual_close_date" value="${escapeHtml(ld.actual_close_date||"")}" class="meta-input"/>
+        <div class="mt-3 border-t border-slate-100 pt-3">
+          <h4 class="text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-2">Trial Scope</h4>
+          <div class="grid grid-cols-2 gap-y-1.5 gap-x-3 text-[12px]">
+            <label class="text-slate-500 self-center">Conditions</label>
+            <input type="text" data-mfield="conditions" data-mlist="1" value="${escapeHtml((m.conditions||[]).join(", "))}" placeholder="comma-separated" class="meta-input"/>
+            <label class="text-slate-500 self-center">Interventions / drugs</label>
+            <input type="text" data-scope-interventions value="${escapeHtml(interventionDisplayNames(m).join(", "))}" placeholder="comma-separated" class="meta-input"/>
+            <label class="text-slate-500 self-center">Care paths</label>
+            <div data-cp-editor>${carePathChipsHtml(t.care_path_ids || [])}</div>
+          </div>
+        </div>
+        <div class="mt-3 border-t border-slate-100 pt-3">
+          <h4 class="text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-2">Matching Control</h4>
+          <div class="grid grid-cols-2 gap-y-1.5 gap-x-3 text-[12px]">
+            <label class="text-slate-500 self-center">Active for matching</label>
+            <label class="inline-flex items-center gap-2 text-[12px] font-semibold text-slate-700">
+              <input type="checkbox" data-trial-enabled ${t.enabled !== false ? "checked" : ""} class="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"/>
+              Include trial
+            </label>
+            <label class="text-slate-500 self-center">Open date</label>
+            <input type="date" data-mfield="lifecycle_dates.start_date" value="${escapeHtml(ld.start_date||"")}" class="meta-input"/>
+            <label class="text-slate-500 self-center">Close date</label>
+            <input type="date" data-mfield="lifecycle_dates.completion_date" value="${escapeHtml(ld.completion_date||"")}" class="meta-input"/>
+          </div>
         </div>
       </div>
     </div>
@@ -2374,6 +2233,19 @@ function renderBody(host, it, i) {
 function bindMetadataInputs(host, trial) {
   trial.metadata = trial.metadata || {};
   bindCarePathEditor(host, trial);
+  host.querySelector("[data-scope-interventions]")?.addEventListener("input", e => {
+    const labels = e.target.value.split(",").map(s => s.trim()).filter(Boolean);
+    trial.metadata.drugs = labels;
+    trial.metadata.interventions = labels.map(label => ({ type: "drug", label }));
+    markTrialEdited(trial);
+  });
+  host.querySelector("[data-trial-enabled]")?.addEventListener("change", e => {
+    trial.enabled = !!e.target.checked;
+    markTrialEdited(trial);
+    const idx = trialItems.findIndex(it => it.result === trial);
+    const row = idx >= 0 ? document.querySelector(`#trialsList details[data-idx="${idx}"]`) : null;
+    if (row) updateRow(row, trialItems[idx]);
+  });
   host.querySelectorAll("[data-mfield]").forEach(input => {
     input.addEventListener("input", () => {
       const field = input.dataset.mfield;
@@ -2598,8 +2470,8 @@ function carePathIdsFromRaw(row) {
 }
 
 function ensureCarePathsFromTrial(trial) {
-  if (!trial?.metadata?.diseases?.length) return [];
-  const ids = trial.metadata.diseases.slice(0, 3).map(upsertCarePathFromHint).filter(Boolean);
+  if (!trial?.metadata?.conditions?.length) return [];
+  const ids = trial.metadata.conditions.slice(0, 3).map(upsertCarePathFromHint).filter(Boolean);
   if (ids.length) saveCarePaths();
   return normalizeCarePathIds(ids);
 }
@@ -2620,14 +2492,14 @@ function normalizeCarePathIds(ids) {
 }
 
 // Best-effort auto-assignment: lowercase alias match against the trial's
-// title + diseases + first-N criterion texts. Returns ALL matching care-path
+// title + conditions + first-N criterion texts. Returns ALL matching care-path
 // ids (a trial can map to several), strongest match first. Empty when none.
 function inferCarePathIds(trial) {
   if (!state.carePaths.length || !trial) return [];
   const m = trial.metadata || {};
   const hay = [
     m.brief_title || "",
-    (m.diseases || []).join(" "),
+    (m.conditions || []).join(" "),
     (trial.criteria || []).slice(0, 6).map(c => c.original_text || "").join(" "),
   ].join(" ").toLowerCase();
   const scored = [];
@@ -2672,8 +2544,8 @@ async function detectCarePathsFromSample({ silent = false } = {}) {
   const sys = `You normalize clinical trials from ANY field of medicine (oncology, cardiology, neurology, endocrinology, infectious disease, rheumatology, …) into a small enum of CARE PATHS — clinical-domain buckets used downstream for patient matching. Examples (illustrative, NOT exhaustive): "breast_cancer", "prostate_cancer", "heart_failure", "atrial_fibrillation", "type_2_diabetes", "alzheimer_disease", "rheumatoid_arthritis", "hiv". Given a sample of trials in any language (e.g. Dutch "borst"/"mamma" -> breast cancer, "prostaat" -> prostate cancer, "hartfalen" -> heart failure, "suikerziekte" -> diabetes), return a deduplicated enum covering ALL of them. Return STRICT JSON: {"care_paths":[{"id":"breast_cancer","label":"Breast cancer","aliases":["breast cancer","mamma","mammacarcinoma","borst","borstkanker"]}]}. Use snake_case English ids. Choose specificity that matches the sample (sub-types when meaningful, broader domains when not). Aliases MUST include every language/spelling/synonym that appears in the sample so downstream alias-matching can place trials into the right bucket. Use lowercase aliases. 3-15 care paths total. No prose.`;
   const condensed = sample.map((r, i) => {
     const title = r.__raw?.metadata?.brief_title || r.__raw?.brief_title || r.__raw?.trial || r.__raw?.Studietitel || r.__raw?.Titel || "";
-    const dis   = r.__raw?.metadata?.conditions || r.__raw?.diseases || r.__raw?.condition || r.__raw?.indication || r.__raw?.care_path || "";
-    return `${i+1}. title="${String(title).slice(0,160)}" diseases="${Array.isArray(dis)?dis.join(", "):String(dis).slice(0,120)}"`;
+    const conditions = r.__raw?.metadata?.conditions || r.__raw?.condition || r.__raw?.indication || r.__raw?.care_path || "";
+    return `${i+1}. title="${String(title).slice(0,160)}" conditions="${Array.isArray(conditions)?conditions.join(", "):String(conditions).slice(0,120)}"`;
   }).join("\n");
   try {
     const res = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -2827,7 +2699,7 @@ async function expandStagesForCriterion(criterion, stageMatch, host, trial) {
   }
   host.innerHTML = `<span class="text-[10px] text-slate-500 italic">Expanding ${escapeHtml(stageMatch.system)} stages…</span>`;
   const sys = `You are a clinical staging expert. Given a free-text criterion that references a cancer staging range, enumerate every explicit stage in that range and provide its TNM-8 mapping when applicable. Return STRICT JSON: {"system":"FIGO|AJCC|TNM|Stage","values":[{"stage":"IB2","tnm":"T1b2 N0 M0"}, ...]}. No prose. If the text doesn't actually specify a stage range, return {"system":"","values":[]}.`;
-  const usr = `Criterion text:\n${criterion.original_text}\n\nDetected staging system: ${stageMatch.system}\n\nEnumerate every individual stage in the range, inclusive. Use the disease context implied by the criterion to pick the correct TNM-8 mapping; if ambiguous, omit the tnm field.`;
+  const usr = `Criterion text:\n${criterion.original_text}\n\nDetected staging system: ${stageMatch.system}\n\nEnumerate every individual stage in the range, inclusive. Use the condition context implied by the criterion to pick the correct TNM-8 mapping; if ambiguous, omit the tnm field.`;
   try {
     const res = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
@@ -3105,8 +2977,7 @@ async function clarifyCriterionWithLLM(trial, criterion, userHint) {
   const m = trial.metadata || {};
   const ctx = [
     m.brief_title ? `Trial title: ${m.brief_title}` : "",
-    m.diseases?.length ? `Diseases: ${m.diseases.join(", ")}` : "",
-    m.phase ? `Phase: ${m.phase}` : "",
+    m.conditions?.length ? `Conditions: ${m.conditions.join(", ")}` : "",
     `Criterion type: ${criterion.type}`,
     `Criterion category: ${criterion.category}`,
     `Original text: ${criterion.original_text}`,
@@ -3267,36 +3138,6 @@ const TS_V1 = {
     HGNC:        "http://www.genenames.org",
     ATC:         "http://www.whocc.no/atc",
   },
-  PHASE_MAP: {
-    "n/a": "n-a", "na": "n-a", "not applicable": "n-a",
-    "early phase 1": "early-phase-1", "early-phase-1": "early-phase-1",
-    "phase 1": "phase-1", "phase i": "phase-1",
-    "phase 1/2": "phase-1-2", "phase i/ii": "phase-1-2", "phase 1-2": "phase-1-2",
-    "phase 2": "phase-2", "phase ii": "phase-2",
-    "phase 2/3": "phase-2-3", "phase ii/iii": "phase-2-3", "phase 2-3": "phase-2-3",
-    "phase 3": "phase-3", "phase iii": "phase-3",
-    "phase 4": "phase-4", "phase iv": "phase-4",
-  },
-  STATUS_MAP: {
-    "Unknown":                "unknown",
-    "Not yet recruiting":     "not-yet-recruiting",
-    "Recruiting":             "recruiting",
-    "Active, not recruiting": "active-not-recruiting",
-    "Completed":              "completed",
-    "Suspended":              "suspended",
-    "Terminated":             "terminated",
-    "Withdrawn":              "withdrawn",
-  },
-  STATUS_INVERSE: {
-    "unknown":                "Unknown",
-    "not-yet-recruiting":     "Not yet recruiting",
-    "recruiting":             "Recruiting",
-    "active-not-recruiting":  "Active, not recruiting",
-    "completed":              "Completed",
-    "suspended":              "Recruiting",
-    "terminated":             "Completed",
-    "withdrawn":              "Completed",
-  },
   DOMAIN_FOR_CATEGORY: {
     intake_notes:      "demographics",
     referral_letters:  "condition",
@@ -3362,12 +3203,6 @@ function fromV1RoutingProfile(raw) {
     document_types: docs,
     default_scan_set: Array.isArray(src.default_scan_set) ? src.default_scan_set.map(tsv1InternalDocId) : undefined,
   });
-}
-
-function tsv1NormalizePhase(p) {
-  const k = String(p || "").trim().toLowerCase();
-  if (!k) return "unknown";
-  return TS_V1.PHASE_MAP[k] || "unknown";
 }
 
 function tsv1ParseCode(raw) {
@@ -3472,50 +3307,29 @@ function tsv1Criterion(c, idx) {
 
 function tsv1Trial(t) {
   const m = t.metadata || {};
-  const conditions = (m.diseases || []).map(d => tsv1Coding({ text: String(d) })).filter(Boolean);
-  const interventions = (m.drugs || []).map(d => ({ type: "drug", label: String(d) }));
-  const lifecycle = {};
-  if (m.recruitment_status && m.recruitment_status !== "Unknown") {
-    lifecycle.status = TS_V1.STATUS_MAP[m.recruitment_status] || "unknown";
-  }
+  const conditions = (m.conditions || []).map(d => tsv1Coding({ text: String(d) })).filter(Boolean);
+  const interventions = normalizeMetadataInterventions(m)
+    .map(iv => ({ type: normalizeInterventionType(iv.type), label: String(iv.label) }))
+    .filter(iv => iv.label);
   const ld = m.lifecycle_dates || {};
-  if (ld.start_date)              lifecycle.start_date = ld.start_date;
-  if (ld.primary_completion_date) lifecycle.primary_completion_date = ld.primary_completion_date;
-  if (ld.actual_close_date)       lifecycle.completion_date = ld.actual_close_date;
 
   const out = {
     id: String(t.trial_id || ""),
     kind: "trial",
-    enabled: t.active !== false,
+    enabled: t.enabled !== false,
     title: String(m.brief_title || ""),
-    phase: tsv1NormalizePhase(m.phase),
     conditions,
     interventions,
   };
-  if (Number.isFinite(+m.enrollment_target) && +m.enrollment_target > 0) {
-    out.enrollment = { target: +m.enrollment_target };
-  }
+  const lifecycle = {};
+  if (ld.start_date) lifecycle.start_date = ld.start_date;
+  if (ld.completion_date) lifecycle.completion_date = ld.completion_date;
   if (Object.keys(lifecycle).length) out.lifecycle = lifecycle;
 
   // Normalized clinical-domain care-path assignment (multi-valued). Persisted
   // so manual edits survive a re-import of a previous export.
   const carePathIds = normalizeCarePathIds(t.care_path_ids);
   if (carePathIds.length) out.care_path_ids = carePathIds;
-
-  if (t.care_path && Array.isArray(t.care_path.phases) && t.care_path.phases.length) {
-    const primaryId = carePathIds[0] || "";
-    const cp = state.carePaths.find(p => p.id === primaryId);
-    out.care_path = {
-      id:    primaryId,
-      label: cp?.label || "",
-      phases: t.care_path.phases.map((p, i) => ({
-        id: `phase-${i + 1}`,
-        label: String(p.phase_name || ""),
-        description: String(p.description || ""),
-        key_activities: Array.isArray(p.key_activities) ? p.key_activities.map(String) : [],
-      })),
-    };
-  }
 
   out.criteria = (t.criteria || []).map((c, i) => tsv1Criterion(c, i));
 
@@ -3560,15 +3374,15 @@ function tsv1CarePathCatalog() {
 function fromV1Trial(v) {
   const m = {
     brief_title: v.title || "",
-    phase: (v.phase || "").replace(/^phase-/, "Phase ").replace("-", "/").replace("n-a", ""),
-    drugs: (v.interventions || []).map(i => i.label).filter(Boolean),
-    diseases: (v.conditions || []).map(c => c.display || c.text || c.code || "").filter(Boolean),
-    enrollment_target: v.enrollment?.target || 0,
-    recruitment_status: TS_V1.STATUS_INVERSE[v.lifecycle?.status] || "Unknown",
+    drugs: (v.interventions || []).filter(i => normalizeInterventionType(i.type) === "drug").map(i => i.label).filter(Boolean),
+    interventions: (v.interventions || []).map(i => ({
+      type: normalizeInterventionType(i.type),
+      label: String(i.label || "").trim(),
+    })).filter(i => i.label),
+    conditions: (v.conditions || []).map(c => c.display || c.text || c.code || "").filter(Boolean),
     lifecycle_dates: {
-      start_date:              v.lifecycle?.start_date || "",
-      primary_completion_date: v.lifecycle?.primary_completion_date || "",
-      actual_close_date:       v.lifecycle?.completion_date || "",
+      start_date:      v.lifecycle?.start_date || "",
+      completion_date: v.lifecycle?.completion_date || "",
     },
   };
   const criteria = (v.criteria || []).map((c, i) => {
@@ -3613,17 +3427,10 @@ function fromV1Trial(v) {
       other_active: cat === "other",
     };
   });
-  const carePathPhases = (v.care_path?.phases || []).map(p => ({
-    phase_name: p.label || "",
-    description: p.description || "",
-    duration: "",
-    key_activities: p.key_activities || [],
-  }));
   return sanitizeTrial({
     trial_id: v.id,
-    active: v.enabled !== false,
+    enabled: v.enabled !== false,
     metadata: m,
-    care_path: { phases: carePathPhases },
     care_path_ids: Array.isArray(v.care_path_ids) ? v.care_path_ids : [],
     criteria,
     edit_state: v.provenance ? {

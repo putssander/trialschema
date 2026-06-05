@@ -290,7 +290,7 @@
         <p class="mt-2 text-xs text-slate-600 leading-relaxed">TrialSchema accepts these formats and auto-detects on upload:</p>
         <ul class="mt-2 text-xs text-slate-700 space-y-1.5 list-disc pl-5">
           <li><strong>Excel / CSV</strong>: required <code class="text-[11px] bg-slate-100 rounded px-1">trial</code> and at least one of <code class="text-[11px] bg-slate-100 rounded px-1">inclusion</code> / <code class="text-[11px] bg-slate-100 rounded px-1">exclusion</code>.</li>
-          <li><strong>Optional spreadsheet columns</strong>: <code class="text-[11px] bg-slate-100 rounded px-1">trial_id</code>, <code class="text-[11px] bg-slate-100 rounded px-1">care_path</code>, <code class="text-[11px] bg-slate-100 rounded px-1">active</code>, <code class="text-[11px] bg-slate-100 rounded px-1">status</code>, <code class="text-[11px] bg-slate-100 rounded px-1">condition</code>, <code class="text-[11px] bg-slate-100 rounded px-1">phase</code>, <code class="text-[11px] bg-slate-100 rounded px-1">study_type</code>, <code class="text-[11px] bg-slate-100 rounded px-1">indication</code>, <code class="text-[11px] bg-slate-100 rounded px-1">start_date</code>, <code class="text-[11px] bg-slate-100 rounded px-1">primary_completion_date</code>, <code class="text-[11px] bg-slate-100 rounded px-1">completion_date</code>.</li>
+          <li><strong>Optional spreadsheet columns</strong>: <code class="text-[11px] bg-slate-100 rounded px-1">trial_id</code>, <code class="text-[11px] bg-slate-100 rounded px-1">care_path</code>, <code class="text-[11px] bg-slate-100 rounded px-1">active</code>, <code class="text-[11px] bg-slate-100 rounded px-1">condition</code>, <code class="text-[11px] bg-slate-100 rounded px-1">indication</code>, <code class="text-[11px] bg-slate-100 rounded px-1">start_date</code>, <code class="text-[11px] bg-slate-100 rounded px-1">completion_date</code>.</li>
           <li><strong>Use exact English headers</strong>: rename <code class="text-[11px] bg-slate-100 rounded px-1">trail</code> to <code class="text-[11px] bg-slate-100 rounded px-1">trial</code> and <code class="text-[11px] bg-slate-100 rounded px-1">care path</code> to <code class="text-[11px] bg-slate-100 rounded px-1">care_path</code>.</li>
           <li><strong>TrialGPT JSONL</strong>: one trial per line with <code class="text-[11px] bg-slate-100 rounded px-1">_id</code>, <code class="text-[11px] bg-slate-100 rounded px-1">title</code>, <code class="text-[11px] bg-slate-100 rounded px-1">metadata.inclusion_criteria</code>.</li>
           <li><strong>Org-specific JSON/JSONL</strong>: array of objects with <code class="text-[11px] bg-slate-100 rounded px-1">trial_id</code>, <code class="text-[11px] bg-slate-100 rounded px-1">criteria</code>, <code class="text-[11px] bg-slate-100 rounded px-1">care_path</code>.</li>
@@ -405,7 +405,7 @@
         <div class="flex items-center justify-between px-5 py-3 border-b border-slate-200">
           <h2 class="text-base font-bold text-slate-900">Trials</h2>
           <div class="flex items-center gap-2 text-xs">
-            <input id="searchInput" placeholder="Search trial id, title, disease..." class="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 w-72 ring-focus"/>
+            <input id="searchInput" placeholder="Search trial id, title, condition..." class="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 w-72 ring-focus"/>
             <select id="filterStatus" class="bg-white border border-slate-200 rounded-lg px-2 py-1.5 ring-focus">
               <option value="">All states</option>
               <option value="pending">Pending</option>
@@ -440,8 +440,8 @@
   <template id="trialRowTpl">
     <details class="group">
       <summary class="px-5 py-3 flex items-center gap-3 hover:bg-slate-50">
-        <button type="button" data-active-toggle title="Toggle recruiting / not yet recruiting"
-          class="shrink-0 w-7 h-7 rounded-md border text-[10px] font-bold transition flex items-center justify-center"></button>
+        <button type="button" data-trial-enabled-toggle title="Toggle trial active / inactive for matching"
+          class="shrink-0 min-w-20 h-7 rounded-md border text-[10px] font-bold transition flex items-center justify-center px-2"></button>
         <span data-status class="badge"></span>
         <div class="min-w-0 flex-1">
           <div class="flex items-center gap-2">

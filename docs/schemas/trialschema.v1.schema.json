@@ -111,26 +111,9 @@
       "properties": {
         "id":          { "type": "string", "description": "Stable primary key. Typically an NCT id; any unique string is allowed.", "$comment": "FHIR R5: ResearchStudy.identifier (primary)." },
         "kind":        { "const": "trial" },
-        "enabled":     { "type": "boolean", "default": true, "description": "Whether the matcher should consider this trial now. In the UI this is paired with the simple Recruiting / Not yet recruiting toggle. It may be derived from an uploaded spreadsheet active/status column; recruitment lifecycle status remains the formal status field." },
+        "enabled":     { "type": "boolean", "default": true, "description": "Local TrialSchema matching switch. If false, agents should skip this trial regardless of dates, care path, or criteria. This is not a recruitment status." },
         "title":       { "type": "string", "$comment": "FHIR R5: ResearchStudy.title." },
         "identifiers": { "type": "array", "items": { "$ref": "#/$defs/Identifier" }, "$comment": "FHIR R5: ResearchStudy.identifier." },
-
-        "phase": {
-          "type": "string",
-          "description": "Trial phase, FHIR-aligned vocabulary.",
-          "$comment": "FHIR R5: ResearchStudy.phase (ValueSet/research-study-phase).",
-          "enum": [
-            "n-a",
-            "early-phase-1",
-            "phase-1",
-            "phase-1-2",
-            "phase-2",
-            "phase-2-3",
-            "phase-3",
-            "phase-4",
-            "unknown"
-          ]
-        },
 
         "sponsor": {
           "type": "object",
@@ -142,46 +125,21 @@
           }
         },
 
-        "conditions":    { "type": "array", "items": { "$ref": "#/$defs/Coding" }, "$comment": "FHIR R5: ResearchStudy.condition." },
-        "interventions": { "type": "array", "items": { "$ref": "#/$defs/Intervention" }, "$comment": "FHIR R5: ResearchStudy.focus (with type=intervention)." },
-
-        "enrollment": {
-          "type": "object",
-          "$comment": "FHIR R5: ResearchStudy.recruitment.targetNumber.",
-          "additionalProperties": false,
-          "properties": {
-            "target": { "type": "integer", "minimum": 0 }
-          }
-        },
+        "conditions":    { "type": "array", "items": { "$ref": "#/$defs/Coding" }, "description": "Trial-level scope: ClinicalTrials.gov-style conditions, diagnoses, disorders, or study focus. This is not by itself an eligibility rule; explicit patient requirements still belong in criteria.", "$comment": "FHIR R5: ResearchStudy.condition." },
+        "interventions": { "type": "array", "items": { "$ref": "#/$defs/Intervention" }, "description": "Trial-level scope: investigational or protocol interventions such as drugs, devices, procedures, radiation, diagnostics, or behavioral interventions. This is not by itself an eligibility rule; prior/current therapy requirements still belong in criteria.", "$comment": "FHIR R5: ResearchStudy.focus (with type=intervention)." },
 
         "lifecycle": {
           "type": "object",
-          "$comment": "FHIR R5: ResearchStudy.status + ResearchStudy.period. Optional; omit lifecycle entirely when source status and dates are unknown.",
+          "$comment": "FHIR R5: ResearchStudy.period. TrialSchema v1 keeps only matcher-relevant open/close dates.",
           "additionalProperties": false,
           "properties": {
-            "status": {
-              "type": "string",
-              "description": "Recruitment / lifecycle status. FHIR ResearchStudy.status-aligned. Omit when unknown rather than guessing.",
-              "enum": [
-                "not-yet-recruiting",
-                "recruiting",
-                "active-not-recruiting",
-                "completed",
-                "suspended",
-                "terminated",
-                "withdrawn",
-                "unknown"
-              ]
-            },
-            "start_date":              { "$ref": "#/$defs/PartialDate" },
-            "primary_completion_date": { "$ref": "#/$defs/PartialDate" },
-            "completion_date":         { "$ref": "#/$defs/PartialDate" }
+            "start_date":      { "$ref": "#/$defs/PartialDate", "description": "Optional matching-window open date. If present and in the future, agents should not match patients before this date." },
+            "completion_date": { "$ref": "#/$defs/PartialDate", "description": "Optional matching-window close date. If present and in the past, agents should skip this trial." }
           }
         },
 
-        "care_path": { "$ref": "#/$defs/CarePath" },
-        "care_path_ids": { "type": "array", "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_]*$" }, "uniqueItems": true, "description": "Optional. Ids of the normalized care paths (from care_path_catalog) this trial belongs to. A trial may map to several clinical-domain buckets. Persisted so manual assignments survive a re-import." },
-        "criteria":  { "type": "array", "items": { "$ref": "#/$defs/Criterion" }, "description": "Ordered list. Array index === run order; the first criterion runs first.", "$comment": "FHIR R5: ResearchStudy.recruitment.eligibility (resolved). v1 represents each criterion inline rather than via a Group reference." },
+        "care_path_ids": { "type": "array", "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_]*$" }, "uniqueItems": true, "description": "Optional but first-class trial-level matching filter. Ids of the normalized care paths (from care_path_catalog) this trial belongs to. Matching agents should evaluate criteria only when the patient care path matches at least one of these ids; if omitted, care-path filtering cannot be applied. Persisted so manual assignments survive a re-import." },
+        "criteria":  { "type": "array", "items": { "$ref": "#/$defs/Criterion" }, "description": "Ordered eligibility rules. Each item should represent a patient-level inclusion or exclusion requirement, not merely trial scope such as a listed condition, intervention, or care-path bucket. Array index === run order; the first criterion runs first.", "$comment": "FHIR R5: ResearchStudy.recruitment.eligibility (resolved). v1 represents each criterion inline rather than via a Group reference." },
 
         "provenance": { "$ref": "#/$defs/TrialProvenance" },
         "extensions": { "$ref": "#/$defs/Extensions" }
@@ -190,7 +148,7 @@
 
     "PartialDate": {
       "type": "string",
-      "description": "ISO-8601 date with optional precision: YYYY, YYYY-MM, or YYYY-MM-DD. Prefer omitting unknown dates from exported lifecycle objects; empty string is allowed for editable drafts.",
+      "description": "ISO-8601 date with optional precision: YYYY, YYYY-MM, or YYYY-MM-DD. Empty string is allowed for editable drafts.",
       "pattern": "^$|^\\d{4}(-\\d{2}(-\\d{2})?)?$"
     },
 
@@ -208,22 +166,6 @@
       }
     },
 
-    "CarePath": {
-      "type": "object",
-      "$comment": "FHIR R5: PlanDefinition (template). Optional. Populate only when the trial maps to a recognised standard clinical pathway (e.g. oncology, RT, structured chronic-disease management). For trials without a clear pathway, omit this field.",
-      "additionalProperties": false,
-      "properties": {
-        "id":      { "type": "string", "description": "Stable id within this export's care-path enum." },
-        "label":   { "type": "string" },
-        "concept": { "$ref": "#/$defs/Coding", "description": "Optional disease-domain anchor (typically a SNOMED CT code)." },
-        "phases": {
-          "type": "array",
-          "$comment": "FHIR R5: PlanDefinition.action[] (each phase is a top-level action).",
-          "items": { "$ref": "#/$defs/CarePathPhase" }
-        }
-      }
-    },
-
     "CarePathCatalogEntry": {
       "type": "object",
       "description": "A normalized care-path bucket in the export-level enum. Trials reference it by id via care_path_ids. Aliases capture cross-language / synonym spellings used for auto-assignment.",
@@ -233,20 +175,7 @@
         "id":      { "type": "string", "pattern": "^[a-z0-9][a-z0-9_]*$", "description": "Stable snake_case id, e.g. breast_cancer." },
         "label":   { "type": "string", "description": "Human-readable label, e.g. \"Breast cancer\"." },
         "aliases": { "type": "array", "items": { "type": "string" }, "description": "Lowercase synonyms/spellings across languages used for alias-based auto-assignment." },
-        "concept": { "$ref": "#/$defs/Coding", "description": "Optional disease-domain anchor (typically a SNOMED CT code)." }
-      }
-    },
-
-    "CarePathPhase": {
-      "type": "object",
-      "required": ["id", "label"],
-      "additionalProperties": false,
-      "properties": {
-        "id":              { "type": "string" },
-        "label":           { "type": "string" },
-        "description":     { "type": "string" },
-        "duration":        { "$ref": "#/$defs/Duration" },
-        "key_activities":  { "type": "array", "items": { "type": "string" } }
+        "concept": { "$ref": "#/$defs/Coding", "description": "Optional condition-domain anchor (typically a SNOMED CT code)." }
       }
     },
 
