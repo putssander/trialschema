@@ -201,6 +201,7 @@ const state = {
   processMode: "single",
   running: false,
   abort: false,
+  carePathDetecting: false,
   carePaths: [],        // normalized clinical-domain enum [{id, label, aliases[]}]
   routingProfile: cloneRoutingProfile(DEFAULT_ROUTING_PROFILE),
   selectedRoutingDocId: "",
@@ -396,7 +397,7 @@ const SPREADSHEET_COLUMN_ALIASES = {
   care_path: ["care_path"],
   inclusion: ["inclusion"],
   exclusion: ["exclusion"],
-  active: ["active"],
+  active: ["active", "status", "enabled"],
   condition: ["condition"],
   indication: ["indication"],
   start_date: ["start_date"],
@@ -404,7 +405,13 @@ const SPREADSHEET_COLUMN_ALIASES = {
 };
 
 function normalizeHeaderName(name) {
-  return String(name || "").trim().toLowerCase();
+  return String(name || "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
 }
 
 function spreadsheetHeaderMap(headers) {
@@ -493,7 +500,7 @@ function spreadsheetFormatHelpHtml() {
   return [
     `Required: <code>trial</code> and at least one of <code>inclusion</code> / <code>exclusion</code>.`,
     `Optional: <code>${SPREADSHEET_OPTIONAL_COLUMNS.join("</code>, <code>")}</code>.`,
-    `Use exact English column names from the template.`,
+    `Template column names are recommended; spaces, hyphens, and underscores are normalized.`,
   ].join(" ");
 }
 
@@ -964,9 +971,17 @@ clearly needs a more specific configured document type. Populate routing.fallbac
 only for optional secondary routes. Do not use document IDs outside the active profile.
 
 RULE 2 - CRITERIA EXPLICIT ENRICHMENT (DOWNSTREAM AI OPTIMIZATION).
+Each criterion has two text roles:
+  - original_text_raw: the verbatim source bullet/line, exactly as supplied when available.
+  - original_text: the English, agent-ready criterion text. Make it explicit enough for
+    patient matching: subject + measurement/finding + timepoint/context + threshold/status.
+    This maps to TrialSchema v1 clarified_text on export. Preserve source meaning exactly.
+    Never make a criterion more or less restrictive.
+
 For any criterion containing a numeric/quantitative comparison (e.g. "HbA1c >= 7.0 %",
 "LVEF < 40 %", "intact-PTH <= 240 pg/mL", "age > 15 years", "GFR >= 50 ml/min",
-"WBC >= 3.0", "ECOG 0-2", "systolic BP >= 140 mmHg"), set:
+"WBC >= 3.0", "ECOG 0-2", "systolic BP >= 140 mmHg", "PSMA scan not older
+than 60 days", "Karnofsky Performance Score 70 or higher"), set:
   evaluation_type: "quantitative"
   structured_target: { metric, standard_code, operator, value, unit }
 where:
@@ -980,19 +995,62 @@ where:
                    Set "" when not confident. End users do NOT verify these codes by hand;
                    the downstream matcher treats them as hints, not contracts.
   - operator: one of "<", "<=", ">", ">=", "=", "!=", "between".
+              PRESERVE strictness exactly. ">" means strictly greater than, not ">=".
+              "<" means strictly less than, not "<=". Phrases like "or higher",
+              "at least", "greater than or equal to" are ">=". Phrases like
+              "or lower", "at most", "less than or equal to" are "<=".
+              "Age >18 years" must stay operator ">" and original_text should say
+              exactly 18 years old does NOT satisfy the criterion. "Age >=18 years"
+              should say 18 years old DOES satisfy the criterion.
   - value: numeric. For "between" use the lower bound and add upper_value.
   - unit: explicit unit string aligned to UCUM where possible (e.g. "%", "pg/mL",
-                   "years", "mL/min", "mmHg", "mg/dL"). Use "" when unitless.
+                   "years", "days", "mL/min", "mmHg", "mg/dL"). Use "" when unitless.
+For time-window or recency requirements ("within 3 months", "not older than 60 days",
+"chemotherapy in the past 5 years"), encode the duration as quantitative when it is a
+single executable comparison, and make the event/time anchor explicit in original_text.
 For purely categorical / boolean criteria (consent, pregnancy, prior radiotherapy yes/no,
 NYHA class assignment, presence-of-condition flags), set evaluation_type: "boolean" and
 OMIT structured_target (or set it to null).
 The downstream matching agent must be able to execute mathematical evaluation
-WITHOUT re-reading the original_text.
+from structured_target and verify the exact natural-language boundary from original_text.
+For composite AND/OR criteria that cannot be represented faithfully by one structured_target,
+keep original_text fully self-contained and do NOT drop logical alternatives merely to fit
+the structured_target field.
+
+RULE 2B - PATIENT-FACT ASSERTION POLARITY.
+Set assertion for the patient fact itself, independent of inclusion/exclusion kind:
+  - "present": the patient must have / must show / must have received the concept.
+  - "absent": the patient must not have / must show no evidence of the concept.
+  - "unknown": the criterion is administrative or cannot be represented as presence/absence.
+Do NOT turn a negated inclusion criterion into an exclusion criterion. For example,
+"Geen metastasen of positieve klieren op PSMA scan" is an inclusion criterion with
+assertion "absent" for metastases/positive nodes. "Zwangerschap" listed under exclusion
+is an exclusion criterion with assertion "present" for pregnancy.
+
+Examples from active trial rows:
+  - "Leeftijd >18 jaar" -> original_text "Participant's age at eligibility assessment must
+    be strictly greater than 18 years; a participant exactly 18 years old does not satisfy
+    this criterion."; structured_target { metric:"age", operator:">", value:18, unit:"years" }.
+  - "Leeftijd groter of gelijk aan 18 jaar" -> original_text "Participant must be 18 years
+    of age or older at eligibility assessment."; operator ">=", value 18, unit "years".
+  - "Karnofsky Performance Score 70 of hoger" -> metric "Karnofsky Performance Score",
+    operator ">=", value 70, unit "".
+  - "WHO performance status kleiner of gelijk aan 2" -> metric "WHO performance status",
+    operator "<=", value 2, unit "".
+  - "PSA bij inclusie kleiner dan 1,0 mg/L" -> original_text should require PSA at
+    inclusion to be strictly less than 1.0 mg/L; metric "PSA", operator "<",
+    value 1.0, unit "mg/L".
+  - "Leeftijd tussen 18 en 80 jaar" -> metric "age", operator "between",
+    value 18, upper_value 80, unit "years"; do not state inclusive/exclusive
+    boundaries unless the source text states them.
+  - "PSMA scan beschikbaar en niet ouder dan 60 dagen" -> original_text should require
+    an available PSMA scan performed no more than 60 days before eligibility assessment;
+    metric "PSMA scan age", operator "<=", value 60, unit "days".
 
 RULE 3 - CROSS-LINGUAL TRANSLATION & STANDARDIZATION.
 If the input contains any non-English clinical text, interpret it natively but translate
-ALL output strings (criteria text, conditions, descriptions) cleanly into
-English. Preserve clinical precision.
+agent-facing output strings (criteria text, conditions, descriptions) cleanly into
+English. Preserve clinical precision. Keep original_text_raw in the source language.
 
 RULE 4 - MATCHING WINDOW DATE NORMALIZATION.
 lifecycle_dates.start_date and lifecycle_dates.completion_date represent the trial's
@@ -1024,7 +1082,7 @@ This is a first-pass matching filter: downstream agents should evaluate the tria
 only when the patient care path matches at least one returned care_path_id.
 ${state.carePaths.length
   ? `Choose care_path_ids ONLY from the active enum below, using the snake_case ids exactly as shown.
-Match across languages and synonyms (Dutch "borst"/"mamma" -> breast_cancer, "hartfalen" -> heart_failure).
+Match across languages and synonyms using the active labels and aliases.
 Return ALL that genuinely apply (most trials map to exactly one; combination / multi-domain trials may
 list several). Return [] when none of the enum entries fit.
 ${carePathPromptBlock()}`
@@ -1056,7 +1114,9 @@ OUTPUT SHAPE - return EXACTLY this JSON structure (no extra keys, no commentary)
     {
       "criterion_id": "INC-01",
       "type": "inclusion",
+      "original_text_raw": "string (verbatim source criterion line/bullet when available)",
       "original_text": "string",
+      "assertion": "present",
       "category": "${categoryShape}",
       "priority_level": 1,
       "status": "active",
@@ -1085,7 +1145,7 @@ function buildUserPrompt(raw) {
   const sf = raw.__sourceFormat;
   if (sf === "spreadsheet") {
     return [
-      "SOURCE FORMAT: English spreadsheet row.",
+      "SOURCE FORMAT: Spreadsheet row. Headers have been normalized; cell values may be in any language.",
       "Minimum expected fields are `trial` plus at least one of `inclusion` or `exclusion`.",
       "Optional fields include `trial_id`, `care_path`, `active`, `condition`, `indication`, `start_date`, and `completion_date`.",
       "Use `trial_id` when present; otherwise derive trial_id from `trial`.",
@@ -1185,7 +1245,7 @@ function buildCtgovPrompt(study) {
 }
 // ----- /CT.gov v2 helpers ----------------------------------------------------
 
-async function callOpenAI(raw) {
+async function callOpenAI(raw, signal) {
   if (!state.apiKey) throw new Error("Missing OpenAI API key. Save it in the header.");
   const systemPrompt = buildSystemPrompt();
   const body = {
@@ -1208,6 +1268,7 @@ async function callOpenAI(raw) {
       "X-DangerouslyAllowBrowser": "true",
     },
     body: JSON.stringify(body),
+    signal,
   });
   if (!res.ok) {
     const errTxt = await res.text().catch(() => "");
@@ -1363,6 +1424,8 @@ function sanitizeCriterion(c, i) {
     criterion_id: String(c.criterion_id || `${prefix}-${String(i+1).padStart(2,"0")}`),
     type,
     original_text: String(c.original_text || ""),
+    original_text_raw: typeof c.original_text_raw === "string" ? c.original_text_raw : "",
+    assertion: ["present", "absent", "unknown"].includes(c.assertion) ? c.assertion : "present",
     category,
     priority_level: prio,
     status: c.status === "inactive" ? "inactive" : "active",
@@ -1492,9 +1555,22 @@ async function prepareQueue() {
 }
 
 async function ensureCarePathsDetected() {
-  if (!state.apiKey || state.carePaths.length) return;
-  setProgress(0, "Detecting care paths from sample...");
-  try { await detectCarePathsFromSample({ silent: true }); } catch {}
+  if (!state.apiKey || !shouldDetectCarePaths()) return;
+  try { await detectCarePathsFromSample({ silent: true, fromPipeline: true }); } catch {}
+}
+
+function shouldDetectCarePaths() {
+  if (!state.apiKey || !(state.rawRows || []).length) return false;
+  if (!state.carePaths.length) return true;
+  if (state.carePaths.some(cp => cp && cp._provisional)) return true;
+  const sourceHints = carePathHintsFromRows(state.rawRows);
+  if (!sourceHints.length) return false;
+  const sourceKeys = new Set(sourceHints.map(carePathAliasKey).filter(Boolean));
+  return state.carePaths.some(cp => {
+    if (cp?._normalized) return false;
+    const keys = uniqueCarePathAliases([cp.id, cp.label, ...(cp.aliases || [])]);
+    return keys.some(k => sourceKeys.has(carePathAliasKey(k)));
+  }) || sourceHints.some(hint => !findCarePathFromHint(hint));
 }
 
 function processableTrialIndexes() {
@@ -1509,16 +1585,35 @@ async function processTrialAtIndex(i, processed, total) {
   const rawCarePathIds = carePathIdsFromRaw(it.raw);
   it.status = "processing";
   it.error = "";
-  it.progressLabel = "Calling model";
+  it.progressLabel = `Calling ${state.model || "model"} · 0s`;
   renderRow(it, i);
   focusTrialRow(i);
-  setProgress(
-    Math.round(processed / Math.max(1, total) * 100),
-    `Processing ${it.preview.id} (${processed + 1}/${total})...`
-  );
+  const startPct = Math.round(processed / Math.max(1, total) * 100);
+  const waitPct = Math.min(96, Math.round((processed + 0.7) / Math.max(1, total) * 100));
+  const stopBusy = startBusyTicker({
+    progressStart: startPct,
+    progressEnd: Math.max(startPct + 1, waitPct),
+    progressText: (_elapsed, stage) => `Processing ${it.preview.id} (${processed + 1}/${total}): ${stage}`,
+    statusTitle: () => "Structuring trial",
+    detail: llmWaitStage,
+  });
+  const started = Date.now();
+  const rowBusy = setInterval(() => {
+    const elapsed = Date.now() - started;
+    it.progressLabel = `${llmWaitStage(elapsed)} · ${formatElapsed(elapsed)}`;
+    const root = document.getElementById("trialsList")?.querySelector(`details[data-idx="${i}"]`);
+    const text = root?.querySelector("[data-process-feedback-text]");
+    if (text) text.textContent = it.progressLabel;
+  }, 1000);
   try {
-    const result = await callOpenAI(it.raw);
+    const result = await callOpenAI(it.raw, state._abortController?.signal);
+    stopBusy();
+    clearInterval(rowBusy);
     it.progressLabel = "Finalizing";
+    setProgress(
+      Math.min(99, Math.round((processed + 0.85) / Math.max(1, total) * 100)),
+      `Finalizing ${it.preview.id} (${processed + 1}/${total})...`
+    );
     renderRow(it, i);
     applySpreadsheetSourceFields(result, it.raw);
     if (!result.trial_id || result.trial_id === "string") result.trial_id = it.preview.id;
@@ -1538,9 +1633,17 @@ async function processTrialAtIndex(i, processed, total) {
       ...inferred,
     ]);
   } catch (e) {
-    it.error = e.message;
-    it.status = "error";
-    it.progressLabel = "";
+    stopBusy();
+    clearInterval(rowBusy);
+    if (e.name === "AbortError" || state.abort) {
+      it.status = "pending";
+      it.error = "";
+      it.progressLabel = "";
+    } else {
+      it.error = e.message;
+      it.status = "error";
+      it.progressLabel = "";
+    }
   }
   if (it.status !== "error") it.progressLabel = "";
   renderRow(it, i);
@@ -1581,8 +1684,12 @@ async function processTrialIndexes(indexes, labelMode = "batch") {
 
   state.abort = false;
   state.running = true;
+  state._abortController = new AbortController();
   document.getElementById("processBtn").disabled = true;
-  document.getElementById("stopBtn").classList.remove("hidden");
+  const stopBtn = document.getElementById("stopBtn");
+  stopBtn.classList.remove("hidden");
+  stopBtn.disabled = false;
+  stopBtn.textContent = "Stop";
   updateProcessButtonLabel();
 
   try {
@@ -1596,8 +1703,12 @@ async function processTrialIndexes(indexes, labelMode = "batch") {
     }
   } finally {
     state.running = false;
+    state._abortController = null;
     document.getElementById("processBtn").disabled = false;
-    document.getElementById("stopBtn").classList.add("hidden");
+    const stopBtn = document.getElementById("stopBtn");
+    stopBtn.classList.add("hidden");
+    stopBtn.disabled = false;
+    stopBtn.textContent = "Stop";
     renderCarePathsPanel();
     const remaining = processableTrialIndexes().length;
     const doneLabel = labelMode === "single"
@@ -1634,6 +1745,48 @@ function sleep(ms) {
 function setProgress(pct, label) {
   document.getElementById("progressBar").style.width = `${Math.max(0, Math.min(100, pct))}%`;
   document.getElementById("progressLabel").textContent = label || "";
+}
+
+function formatElapsed(ms) {
+  const sec = Math.max(0, Math.floor(ms / 1000));
+  if (sec < 60) return `${sec}s`;
+  const min = Math.floor(sec / 60);
+  return `${min}m ${String(sec % 60).padStart(2, "0")}s`;
+}
+
+function llmWaitStage(elapsedMs) {
+  if (elapsedMs < 1500) return "Preparing request";
+  if (elapsedMs < 8000) return `Calling ${state.model || "model"}`;
+  if (elapsedMs < 20000) return "Waiting for model response";
+  if (elapsedMs < 45000) return "Still waiting for the model";
+  return "Still working; large model calls can take a minute";
+}
+
+function busyStatusHtml(title, detail, elapsedMs) {
+  return `
+    <span class="inline-flex items-center gap-1.5 text-blue-700">
+      <span class="ts-spinner h-3 w-3 rounded-full border-2 border-blue-200 border-t-blue-700"></span>
+      <span class="font-semibold">${escapeHtml(title)}</span>
+      <span class="text-blue-500">${escapeHtml(detail)} · ${formatElapsed(elapsedMs)}</span>
+    </span>
+  `;
+}
+
+function startBusyTicker({ statusEl, progressStart = 0, progressEnd = 30, progressText, statusTitle, detail }) {
+  const started = Date.now();
+  const update = () => {
+    const elapsed = Date.now() - started;
+    const stage = typeof detail === "function" ? detail(elapsed) : (detail || "Working");
+    const title = typeof statusTitle === "function" ? statusTitle(elapsed) : (statusTitle || "Working");
+    if (statusEl) statusEl.innerHTML = busyStatusHtml(title, stage, elapsed);
+    if (progressText) {
+      const drift = Math.min(progressEnd - progressStart, Math.floor(elapsed / 1800));
+      setProgress(progressStart + Math.max(0, drift), `${progressText(elapsed, stage)} · ${formatElapsed(elapsed)}`);
+    }
+  };
+  update();
+  const timer = setInterval(update, 1000);
+  return () => clearInterval(timer);
 }
 
 function updateProcessModeUi() {
@@ -2132,10 +2285,32 @@ function updateRow(root, it) {
   }
 }
 
+// Pull the raw inclusion/exclusion text straight from the uploaded source row so
+// reviewers can read it before spending an LLM call. Returns the unstructured
+// blobs as-is; structuring into discrete criteria still requires processing.
+function rawCriteriaPreview(raw) {
+  if (!raw) return { inclusion: "", exclusion: "" };
+  const r = raw.__raw || {};
+  const m = r.metadata || {};
+  const inclusion = String(r.inclusion || m.inclusion_criteria || "").trim();
+  const exclusion = String(r.exclusion || m.exclusion_criteria || "").trim();
+  return { inclusion, exclusion };
+}
+
+function rawCriteriaListHtml(text) {
+  const lines = String(text || "")
+    .split(/\r?\n|(?:^|\s)[•\-\u2022]\s+/)
+    .map(s => s.trim())
+    .filter(Boolean);
+  if (!lines.length) return `<p class="text-[12px] italic text-slate-400">None provided in source.</p>`;
+  return `<ul class="list-disc pl-5 space-y-1 text-[12px] text-slate-700">${
+    lines.map(l => `<li>${escapeHtml(l)}</li>`).join("")
+  }</ul>`;
+}
+
 function renderBody(host, it, i) {
   const t = it.result;
   const hasApiKey = !!state.apiKey;
-
   // Per-trial manual prompt panel, shown only when no API key is available.
   const manualPanel = hasApiKey ? "" : `
     <details class="mb-3 bg-white rounded-xl border border-slate-200 group">
@@ -2162,9 +2337,32 @@ function renderBody(host, it, i) {
   `;
 
   if (!t) {
-    host.innerHTML = manualPanel + (it.error
+    const raw = rawCriteriaPreview(it.raw);
+    const hasRaw = raw.inclusion || raw.exclusion;
+    const rawPreview = hasRaw ? `
+      <div class="mb-3 bg-white rounded-xl border border-slate-200 overflow-hidden">
+        <div class="px-4 py-2.5 bg-amber-50 border-b border-amber-200 flex items-start gap-2">
+          <svg viewBox="0 0 24 24" class="w-4 h-4 text-amber-600 shrink-0 mt-0.5" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <div>
+            <p class="text-xs font-semibold text-amber-800">Raw source text — not yet agent-ready</p>
+            <p class="text-[11px] text-amber-700 mt-0.5">This is the unstructured criteria text from your file. ${hasApiKey ? "Process this trial" : "Process with an API key"} to split it into discrete, individually-routable criteria that matching agents can use.</p>
+          </div>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-slate-100">
+          <div class="p-4">
+            <h4 class="text-[11px] font-semibold uppercase tracking-wider text-emerald-600 mb-2">Inclusion (raw)</h4>
+            ${rawCriteriaListHtml(raw.inclusion)}
+          </div>
+          <div class="p-4">
+            <h4 class="text-[11px] font-semibold uppercase tracking-wider text-rose-600 mb-2">Exclusion (raw)</h4>
+            ${rawCriteriaListHtml(raw.exclusion)}
+          </div>
+        </div>
+      </div>
+    ` : "";
+    host.innerHTML = manualPanel + rawPreview + (it.error
       ? `<div class="text-sm text-rose-700 bg-rose-50 border border-rose-200 rounded-xl p-3">${escapeHtml(it.error)}</div>`
-      : `<div class="text-sm text-slate-500 italic p-3">${hasApiKey ? "Not processed yet. Use Process on this trial or Process Next Trial." : "Not processed yet. Use the manual panel above, or save an API key and run the queue."}</div>`);
+      : `<div class="text-sm text-slate-500 italic p-3">${hasApiKey ? "Not processed yet. Use Process on this trial or Process Next Trial to structure the criteria above." : "Not processed yet. Use the manual panel above, or save an API key and run the queue."}</div>`);
     if (!hasApiKey) bindManualPanel(host, it, i);
     return;
   }
@@ -2401,20 +2599,57 @@ const CAREPATHS_STORAGE = "trialschema.carepaths";
 function loadCarePaths() {
   try {
     const arr = JSON.parse(localStorage.getItem(CAREPATHS_STORAGE) || "[]");
-    state.carePaths = Array.isArray(arr) ? arr.filter(x => x && x.id && x.label) : [];
+    state.carePaths = Array.isArray(arr) ? arr.map(normalizeCarePathEntry).filter(Boolean) : [];
   } catch { state.carePaths = []; }
 }
 function saveCarePaths() {
   try { localStorage.setItem(CAREPATHS_STORAGE, JSON.stringify(state.carePaths)); } catch {}
 }
 function slugifyCarePath(label) {
-  return String(label).toLowerCase().normalize("NFKD").replace(/[^\w]+/g, "_").replace(/^_|_$/g, "").slice(0, 40) || "carepath";
+  return String(label)
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .replace(/_{2,}/g, "_")
+    .slice(0, 40) || "carepath";
 }
 function uniqueCarePathId(base) {
   let id = base, n = 2;
   const taken = new Set(state.carePaths.map(c => c.id));
   while (taken.has(id)) { id = `${base}_${n++}`; }
   return id;
+}
+
+function cleanCarePathAlias(value) {
+  return String(value || "").trim().replace(/\s+/g, " ");
+}
+
+function carePathAliasKey(value) {
+  return cleanCarePathAlias(value).toLowerCase();
+}
+
+function uniqueCarePathAliases(values) {
+  const seen = new Set();
+  return (values || []).map(cleanCarePathAlias).filter(v => {
+    const key = carePathAliasKey(v);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function normalizeCarePathEntry(cp) {
+  if (!cp || typeof cp !== "object") return null;
+  const id = slugifyCarePath(cp.id || cp.label || "");
+  const label = String(cp.label || carePathLabelFromHint(id)).trim();
+  if (!id || !label) return null;
+  const aliases = uniqueCarePathAliases(Array.isArray(cp.aliases) ? cp.aliases : []);
+  const out = { id, label, aliases };
+  if (cp._provisional === true) out._provisional = true;
+  if (cp._normalized === true) out._normalized = true;
+  return out;
 }
 
 function carePathLabelFromHint(value) {
@@ -2430,31 +2665,65 @@ function carePathHintsFromValue(value) {
     .filter(Boolean);
 }
 
-function upsertCarePathFromHint(value) {
+function rawCarePathValue(row) {
+  const r = row?.__raw || row || {};
+  return r.care_path ?? r.carePath ?? r.metadata?.care_path ?? r.metadata?.carePath ?? "";
+}
+
+function carePathHintsFromRows(rawRows) {
+  const seen = new Set();
+  const out = [];
+  (rawRows || []).forEach(row => {
+    carePathHintsFromValue(rawCarePathValue(row)).forEach(hint => {
+      const key = carePathAliasKey(hint);
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      out.push(hint);
+    });
+  });
+  return out;
+}
+
+function findCarePathFromHint(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  const label = carePathLabelFromHint(raw);
+  const id = slugifyCarePath(raw);
+  const alias = carePathAliasKey(raw);
+  return state.carePaths.find(c =>
+    c.id === id ||
+    c.id === raw.toLowerCase() ||
+    String(c.label || "").toLowerCase() === label.toLowerCase() ||
+    (c.aliases || []).some(a => carePathAliasKey(a) === alias)
+  ) || null;
+}
+
+function upsertCarePathFromHint(value, { allowCreate = true, provisional = true } = {}) {
   const raw = String(value || "").trim();
   const label = carePathLabelFromHint(raw);
   if (!label) return "";
   const id = slugifyCarePath(raw);
-  const alias = raw.toLowerCase();
-  let cp = state.carePaths.find(c =>
-    c.id === id ||
-    String(c.label || "").toLowerCase() === label.toLowerCase() ||
-    (c.aliases || []).some(a => String(a).toLowerCase() === alias)
-  );
+  const alias = cleanCarePathAlias(raw);
+  let cp = findCarePathFromHint(raw);
+  if (!cp && !allowCreate) return "";
   if (!cp) {
-    cp = { id: state.carePaths.some(c => c.id === id) ? uniqueCarePathId(id) : id, label, aliases: [alias] };
+    cp = {
+      id: state.carePaths.some(c => c.id === id) ? uniqueCarePathId(id) : id,
+      label,
+      aliases: alias ? [alias] : [],
+      _provisional: !!provisional,
+    };
     state.carePaths.push(cp);
-  } else if (alias && !(cp.aliases || []).includes(alias)) {
+  } else if (alias && !(cp.aliases || []).some(a => carePathAliasKey(a) === carePathAliasKey(alias))) {
     cp.aliases = [...(cp.aliases || []), alias];
   }
   return cp.id;
 }
 
 function ensureCarePathsFromRawRows(rawRows) {
+  if (state.apiKey) return false;
   const before = JSON.stringify(state.carePaths);
-  (rawRows || []).forEach(row => {
-    carePathHintsFromValue(row.__raw?.care_path).forEach(upsertCarePathFromHint);
-  });
+  carePathHintsFromRows(rawRows).forEach(hint => upsertCarePathFromHint(hint, { provisional: true }));
   if (JSON.stringify(state.carePaths) !== before) {
     saveCarePaths();
     return true;
@@ -2463,13 +2732,17 @@ function ensureCarePathsFromRawRows(rawRows) {
 }
 
 function carePathIdsFromRaw(row) {
-  if (!row?.__raw?.care_path) return [];
-  const ids = carePathHintsFromValue(row.__raw.care_path).map(upsertCarePathFromHint).filter(Boolean);
+  const rawValue = rawCarePathValue(row);
+  if (!rawValue) return [];
+  const ids = carePathHintsFromValue(rawValue)
+    .map(hint => upsertCarePathFromHint(hint, { allowCreate: !state.apiKey, provisional: !state.apiKey }))
+    .filter(Boolean);
   if (ids.length) saveCarePaths();
   return normalizeCarePathIds(ids);
 }
 
 function ensureCarePathsFromTrial(trial) {
+  if (state.apiKey) return [];
   if (!trial?.metadata?.conditions?.length) return [];
   const ids = trial.metadata.conditions.slice(0, 3).map(upsertCarePathFromHint).filter(Boolean);
   if (ids.length) saveCarePaths();
@@ -2483,9 +2756,14 @@ function normalizeCarePathIds(ids) {
   const out = [];
   const known = state.carePaths.length ? new Set(state.carePaths.map(c => c.id)) : null;
   (Array.isArray(ids) ? ids : []).forEach(raw => {
-    const id = String(raw || "").trim().toLowerCase();
+    const s = String(raw || "").trim();
+    let id = slugifyCarePath(s);
     if (!id) return;
-    if (known && !known.has(id)) return;
+    if (known && !known.has(id)) {
+      const cp = findCarePathFromHint(s);
+      if (!cp) return;
+      id = cp.id;
+    }
     if (!out.includes(id)) out.push(id);
   });
   return out;
@@ -2528,9 +2806,48 @@ function reassignAllCarePaths() {
   return changed;
 }
 
-async function detectCarePathsFromSample({ silent = false } = {}) {
+function normalizeDetectedCarePath(cp) {
+  if (!cp || typeof cp !== "object") return null;
+  const id = slugifyCarePath(cp.id || cp.label || "");
+  const label = String(cp.label || carePathLabelFromHint(id)).trim();
+  if (!id || !label) return null;
+  return {
+    id,
+    label,
+    aliases: uniqueCarePathAliases(Array.isArray(cp.aliases) ? cp.aliases : []),
+    _normalized: true,
+  };
+}
+
+function mergeDetectedCarePaths(list) {
+  const detected = (Array.isArray(list) ? list : []).map(normalizeDetectedCarePath).filter(Boolean);
+  if (!detected.length) return;
+  const detectedIds = new Set(detected.map(cp => cp.id));
+  const detectedAliases = new Set(detected.flatMap(cp => cp.aliases || []).map(carePathAliasKey).filter(Boolean));
+  const keep = (state.carePaths || []).filter(cp => {
+    if (!cp || cp._provisional) return false;
+    if (detectedIds.has(cp.id)) return true;
+    const keys = uniqueCarePathAliases([cp.id, cp.label, ...(cp.aliases || [])]);
+    return !keys.some(k => detectedAliases.has(carePathAliasKey(k)));
+  });
+  const byId = Object.fromEntries(keep.map(cp => [cp.id, { ...cp, aliases: uniqueCarePathAliases(cp.aliases || []) }]));
+  detected.forEach(cp => {
+    if (byId[cp.id]) {
+      byId[cp.id].label = cp.label;
+      byId[cp.id].aliases = uniqueCarePathAliases([...(byId[cp.id].aliases || []), ...(cp.aliases || [])]);
+      byId[cp.id]._normalized = true;
+      delete byId[cp.id]._provisional;
+    } else {
+      byId[cp.id] = cp;
+    }
+  });
+  state.carePaths = Object.values(byId);
+}
+
+async function detectCarePathsFromSample({ silent = false, fromPipeline = false } = {}) {
   const statusEl = document.getElementById("carePathsStatus");
   const setStatus = (html) => { if (statusEl) statusEl.innerHTML = html; };
+  if (state.carePathDetecting) return;
   if (!state.apiKey) {
     if (!silent) setStatus(`<span class="text-rose-600">Save an OpenAI key in the header to detect care paths.</span>`);
     return;
@@ -2540,13 +2857,44 @@ async function detectCarePathsFromSample({ silent = false } = {}) {
     if (!silent) setStatus(`<span class="text-rose-600">Load trials first (upload a source file).</span>`);
     return;
   }
-  setStatus(`<span class="italic text-slate-500">Sampling ${sample.length} trials…</span>`);
-  const sys = `You normalize clinical trials from ANY field of medicine (oncology, cardiology, neurology, endocrinology, infectious disease, rheumatology, …) into a small enum of CARE PATHS — clinical-domain buckets used downstream for patient matching. Examples (illustrative, NOT exhaustive): "breast_cancer", "prostate_cancer", "heart_failure", "atrial_fibrillation", "type_2_diabetes", "alzheimer_disease", "rheumatoid_arthritis", "hiv". Given a sample of trials in any language (e.g. Dutch "borst"/"mamma" -> breast cancer, "prostaat" -> prostate cancer, "hartfalen" -> heart failure, "suikerziekte" -> diabetes), return a deduplicated enum covering ALL of them. Return STRICT JSON: {"care_paths":[{"id":"breast_cancer","label":"Breast cancer","aliases":["breast cancer","mamma","mammacarcinoma","borst","borstkanker"]}]}. Use snake_case English ids. Choose specificity that matches the sample (sub-types when meaningful, broader domains when not). Aliases MUST include every language/spelling/synonym that appears in the sample so downstream alias-matching can place trials into the right bucket. Use lowercase aliases. 3-15 care paths total. No prose.`;
+  const sourceHints = carePathHintsFromRows(state.rawRows);
+  const detectBtn = document.getElementById("detectCarePathsBtn");
+  const addBtn = document.getElementById("addCarePathBtn");
+  const reassignBtn = document.getElementById("reassignCarePathsBtn");
+  const originalDetectHtml = detectBtn?.innerHTML || "";
+  state.carePathDetecting = true;
+  if (detectBtn) {
+    detectBtn.disabled = true;
+    detectBtn.innerHTML = `<span class="ts-spinner h-3.5 w-3.5 rounded-full border-2 border-white/40 border-t-white"></span> Detecting...`;
+  }
+  [addBtn, reassignBtn].forEach(btn => {
+    if (!btn) return;
+    btn.disabled = true;
+    btn.classList.add("opacity-50", "cursor-not-allowed");
+  });
+  const stopBusy = startBusyTicker({
+    statusEl,
+    progressStart: fromPipeline ? 2 : 0,
+    progressEnd: fromPipeline ? 24 : 90,
+    statusTitle: () => "Detecting care paths",
+    detail: (elapsed) => {
+      if (elapsed < 1200) return `Sampling ${sample.length} trial${sample.length === 1 ? "" : "s"}`;
+      if (elapsed < 8000) return `Calling ${state.model || "model"} with ${sourceHints.length || "no"} source hint${sourceHints.length === 1 ? "" : "s"}`;
+      if (elapsed < 20000) return "Waiting for normalized JSON";
+      return "Still waiting; this can happen on larger models";
+    },
+    progressText: (_elapsed, stage) => `Detecting care paths from sample: ${stage}`,
+  });
+  const sys = `You normalize clinical trials from any field of medicine into a compact enum of CARE PATHS: clinical-domain buckets used downstream for patient matching. Infer the English clinical meaning from the supplied source values and trial context. Return STRICT JSON: {"care_paths":[{"id":"english_snake_case","label":"English display name","aliases":["original source value"]}]}. Requirements: id MUST be English snake_case; label MUST be an English display name; aliases MUST preserve the original source care_path values and source-language spellings as written. Do not copy a non-English source value into id or label. Choose specificity that matches the sample. No prose.`;
   const condensed = sample.map((r, i) => {
     const title = r.__raw?.metadata?.brief_title || r.__raw?.brief_title || r.__raw?.trial || r.__raw?.Studietitel || r.__raw?.Titel || "";
-    const conditions = r.__raw?.metadata?.conditions || r.__raw?.condition || r.__raw?.indication || r.__raw?.care_path || "";
-    return `${i+1}. title="${String(title).slice(0,160)}" conditions="${Array.isArray(conditions)?conditions.join(", "):String(conditions).slice(0,120)}"`;
+    const conditions = r.__raw?.metadata?.conditions || r.__raw?.condition || r.__raw?.indication || "";
+    const carePath = rawCarePathValue(r);
+    return `${i+1}. title="${String(title).slice(0,160)}" care_path="${String(carePath).slice(0,120)}" conditions="${Array.isArray(conditions)?conditions.join(", "):String(conditions).slice(0,120)}"`;
   }).join("\n");
+  const currentCatalog = state.carePaths.length
+    ? JSON.stringify(state.carePaths.map(cp => ({ id: cp.id, label: cp.label, aliases: cp.aliases || [] })), null, 2)
+    : "[]";
   try {
     const res = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
@@ -2556,36 +2904,52 @@ async function detectCarePathsFromSample({ silent = false } = {}) {
         response_format: { type: "json_object" },
         messages: [
           { role: "system", content: sys },
-          { role: "user",   content: `Sample trials:\n${condensed}` },
+          { role: "user",   content: [
+            "Original source care_path values. Preserve these as aliases; map their ids/labels to English:",
+            sourceHints.length ? sourceHints.map(v => `- ${v}`).join("\n") : "(none supplied)",
+            "",
+            "Current care_path catalog, if any. Normalize provisional/source-language entries into English ids and labels:",
+            currentCatalog,
+            "",
+            "Sample trials:",
+            condensed,
+          ].join("\n") },
         ],
       }),
+      signal: state._abortController?.signal,
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const j = await res.json();
     const parsed = JSON.parse(j.choices?.[0]?.message?.content || "{}");
     const list = Array.isArray(parsed.care_paths) ? parsed.care_paths : [];
-    // Merge with existing (preserve user edits where label matches).
-    const byId = Object.fromEntries(state.carePaths.map(c => [c.id, c]));
-    list.forEach(cp => {
-      const id = String(cp.id || slugifyCarePath(cp.label || "")).toLowerCase();
-      const label = String(cp.label || id);
-      const aliases = Array.isArray(cp.aliases) ? cp.aliases.map(a => String(a).toLowerCase().trim()).filter(Boolean) : [];
-      if (byId[id]) {
-        const merged = new Set([...(byId[id].aliases || []), ...aliases]);
-        byId[id].aliases = [...merged];
-      } else {
-        byId[id] = { id, label, aliases };
-      }
-    });
-    state.carePaths = Object.values(byId);
+    mergeDetectedCarePaths(list);
     saveCarePaths();
+    (state.results || []).forEach(t => { if (t) t.care_path_ids = normalizeCarePathIds(t.care_path_ids); });
     const changed = reassignAllCarePaths();
     renderCarePathsPanel();
     // Refresh visible trial bodies so their dropdowns reflect new ids.
     trialItems.forEach((it, i) => { if (it.result) renderRow(it, i); });
     setStatus(`<span class="text-emerald-700">Detected ${list.length} care path(s). Auto-assigned ${changed} trial(s).</span>`);
+    setProgress(fromPipeline ? 24 : 100, `Detected ${list.length} care path(s). Auto-assigned ${changed} trial(s).`);
   } catch (e) {
-    setStatus(`<span class="text-rose-600">Detection failed: ${escapeHtml(e.message)}</span>`);
+    if (e.name === "AbortError" || state.abort) {
+      setStatus(`<span class="text-slate-500">Care-path detection stopped.</span>`);
+    } else {
+      setStatus(`<span class="text-rose-600">Detection failed: ${escapeHtml(e.message)}</span>`);
+      if (!fromPipeline) setProgress(100, `Care-path detection failed: ${e.message}`);
+    }
+  } finally {
+    stopBusy();
+    state.carePathDetecting = false;
+    if (detectBtn) {
+      detectBtn.disabled = false;
+      detectBtn.innerHTML = originalDetectHtml;
+    }
+    [addBtn, reassignBtn].forEach(btn => {
+      if (!btn) return;
+      btn.disabled = false;
+      btn.classList.remove("opacity-50", "cursor-not-allowed");
+    });
   }
 }
 
@@ -2633,7 +2997,7 @@ function renderCarePathsPanel() {
         <span class="badge bg-blue-50 text-blue-700 border border-blue-200">${counts[cp.id] || 0}</span>
         <button data-cp-delete title="Delete care path" class="text-slate-400 hover:text-rose-600 text-sm leading-none px-1">×</button>
       </div>
-      <input data-cp-aliases placeholder="aliases, comma-separated (lowercase: breast, mamma, borst…)"
+      <input data-cp-aliases placeholder="original source values / aliases, comma-separated"
         class="mt-1.5 w-full text-[11px] font-mono rounded border border-slate-200 bg-white focus:border-blue-400 focus:outline-none px-2 py-1"
         value="${escapeHtml((cp.aliases || []).join(", "))}"/>
     </div>
@@ -2645,7 +3009,7 @@ function renderCarePathsPanel() {
     if (!cp) return;
     card.querySelector("[data-cp-label]").addEventListener("input", e => { cp.label = e.target.value; saveCarePaths(); });
     card.querySelector("[data-cp-aliases]").addEventListener("input", e => {
-      cp.aliases = e.target.value.split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
+      cp.aliases = uniqueCarePathAliases(e.target.value.split(","));
       saveCarePaths();
     });
     card.querySelector("[data-cp-delete]").addEventListener("click", () => {
@@ -2662,7 +3026,7 @@ function renderCarePathsPanel() {
 function bindCarePathControls() {
   document.getElementById("detectCarePathsBtn")?.addEventListener("click", () => detectCarePathsFromSample());
   document.getElementById("addCarePathBtn")?.addEventListener("click", () => {
-    const label = prompt("New care path label (e.g. \"Breast cancer\"):");
+    const label = prompt("New care path label:");
     if (!label) return;
     const id = uniqueCarePathId(slugifyCarePath(label));
     state.carePaths.push({ id, label: label.trim(), aliases: [label.trim().toLowerCase()] });
@@ -2767,47 +3131,70 @@ function buildCriterionRow(trial, c, ci) {
   const otherActiveNow = () => docRoutingState(c, "other") !== "off";
 
   card.innerHTML = `
-    <!-- Header row: handle | # rank | type | criterion text | clarify | status -->
-    <div class="flex items-start gap-3">
-      <button type="button" data-handle title="Drag to reorder"
-        class="shrink-0 mt-1 text-slate-300 hover:text-slate-500 cursor-grab select-none">
-        <svg viewBox="0 0 24 24" class="w-4 h-4" fill="currentColor"><circle cx="9" cy="6" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="18" r="1.4"/></svg>
-      </button>
-      <span data-rank title="Run-order position (lower = run earlier)"
-        class="shrink-0 w-7 h-7 grid place-items-center rounded-full bg-slate-100 text-slate-700 text-[12px] font-bold mt-0.5">${ci+1}</span>
-      <span class="shrink-0 inline-flex items-center text-[10px] font-semibold rounded-md border ${typeColor} px-2 py-0.5 mt-1">${escapeHtml(c.criterion_id)}</span>
+    <!-- Header row: reorder/rank | criterion text | status -->
+    <div class="grid grid-cols-[auto_minmax(0,1fr)] lg:grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-3">
+      <div class="shrink-0 flex items-center gap-2">
+        <button type="button" data-handle title="Drag to reorder"
+          class="mt-1 text-slate-300 hover:text-slate-500 cursor-grab select-none">
+          <svg viewBox="0 0 24 24" class="w-4 h-4" fill="currentColor"><circle cx="9" cy="6" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="18" r="1.4"/></svg>
+        </button>
+        <span data-rank title="Run-order position (lower = run earlier)"
+          class="w-7 h-7 grid place-items-center rounded-full bg-slate-100 text-slate-700 text-[12px] font-bold">${ci+1}</span>
+      </div>
+
       <div class="flex-1 min-w-0">
-        <div data-text class="text-[13px] leading-relaxed text-slate-800">${escapeHtml(c.original_text)}</div>
-        <div data-original-line></div>
-        <div class="mt-1.5 flex items-center gap-2 flex-wrap text-[11px]">
+        <div class="flex flex-wrap items-center gap-2 text-[11px]">
+          <span class="inline-flex items-center text-[10px] font-semibold rounded-md border ${typeColor} px-2 py-0.5">${escapeHtml(c.criterion_id)}</span>
           <span class="text-slate-400 lowercase tracking-wide">${escapeHtml(categoryLabel)}</span>
           ${evalPill}
           ${codePill}
         </div>
+        <div data-text class="mt-2 text-[13px] leading-relaxed text-slate-800">${escapeHtml(c.original_text)}</div>
+        <div data-original-line></div>
+        <div class="mt-2 flex flex-wrap items-center gap-2">
+          <button type="button" data-clarify-toggle title="Manually rewrite this criterion, or ask the LLM for an editable draft"
+            class="inline-flex items-center gap-1.5 text-[11px] font-semibold rounded-md border border-slate-200 bg-white text-slate-700 px-2.5 py-1.5 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700">
+            <svg viewBox="0 0 24 24" class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20l9-9-4-4-9 9-1 5 5-1z" stroke-linejoin="round"/></svg>
+            Clarify / rewrite
+          </button>
+        </div>
       </div>
-      <div class="shrink-0 flex flex-col items-end gap-1.5 mt-0.5">
-        <button type="button" data-status-toggle
-          class="text-[11px] font-semibold rounded-full px-3 py-1 border transition w-24"></button>
-        <button type="button" data-clarify-toggle title="Rewrite this criterion to be unambiguous and self-contained"
-          class="inline-flex items-center gap-1 text-[11px] font-semibold rounded-md bg-blue-50 text-blue-700 border border-blue-200 px-2 py-1 hover:bg-blue-100">
-          <svg viewBox="0 0 24 24" class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20l9-9-4-4-9 9-1 5 5-1z" stroke-linejoin="round"/></svg>
-          Clarify
-        </button>
-      </div>
+
+      <button type="button" data-status-toggle
+        class="col-start-2 justify-self-start lg:col-start-auto lg:justify-self-auto shrink-0 text-[11px] font-semibold rounded-full px-3 py-1 border transition w-24 mt-0.5"></button>
     </div>
 
-    <!-- Clarify panel (vertical, full-width) -->
-    <div data-clarify-panel class="hidden mt-3 rounded-lg border border-blue-200 bg-blue-50/60 p-3 space-y-2">
-      <div class="text-[11px] font-semibold text-blue-800">Rewrite this criterion to be explicit for the matching agent</div>
-      <textarea data-clarify-input rows="2"
-        placeholder="Optional guidance, e.g. 'HER2-low means IHC 1+ or 2+ ISH-negative'. Leave blank to just disambiguate."
-        class="w-full text-[12px] rounded-md border border-blue-200 bg-white focus:border-blue-400 focus:outline-none px-2.5 py-1.5 resize-y"></textarea>
-      <div class="flex items-center gap-2">
-        <button type="button" data-clarify-run
-          class="text-[11px] font-semibold rounded-md bg-blue-600 text-white px-3 py-1.5 hover:bg-blue-700 disabled:opacity-50">Rewrite with LLM</button>
+    <!-- Rewrite panel: manual first, LLM as an editable draft assist -->
+    <div data-clarify-panel class="hidden mt-3 rounded-lg border border-blue-200 bg-blue-50/60 p-3">
+      <div class="flex items-start justify-between gap-3">
+        <div>
+          <div class="text-[11px] font-semibold text-blue-800">Clarify criterion text</div>
+          <div class="text-[10.5px] text-blue-700/80 mt-0.5">Edit directly, or generate an LLM draft and review it before applying.</div>
+        </div>
         <button type="button" data-clarify-cancel
-          class="text-[11px] font-medium text-slate-500 hover:text-slate-700 px-1">cancel</button>
-        <span data-clarify-status class="text-[10px]"></span>
+          class="text-[11px] font-medium text-slate-500 hover:text-slate-700 px-1">Close</button>
+      </div>
+      <div class="mt-3 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(240px,0.48fr)] gap-3">
+        <label class="block">
+          <span class="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Reviewed criterion text</span>
+          <textarea data-clarify-manual rows="3"
+            class="mt-1 w-full text-[12px] rounded-md border border-blue-200 bg-white focus:border-blue-400 focus:outline-none px-2.5 py-1.5 resize-y">${escapeHtml(c.original_text)}</textarea>
+        </label>
+        <label class="block">
+          <span class="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Optional LLM guidance</span>
+          <textarea data-clarify-input rows="3"
+            placeholder="Example: HER2-low means IHC 1+ or 2+ ISH-negative."
+            class="mt-1 w-full text-[12px] rounded-md border border-blue-200 bg-white focus:border-blue-400 focus:outline-none px-2.5 py-1.5 resize-y"></textarea>
+        </label>
+      </div>
+      <div class="mt-3 flex flex-wrap items-center justify-between gap-2">
+        <span data-clarify-status class="text-[10.5px]"></span>
+        <div class="flex flex-wrap items-center gap-2">
+          <button type="button" data-clarify-run
+            class="text-[11px] font-semibold rounded-md bg-white text-blue-700 border border-blue-200 px-3 py-1.5 hover:bg-blue-50 disabled:opacity-50">Draft with LLM</button>
+          <button type="button" data-clarify-apply
+            class="text-[11px] font-semibold rounded-md bg-blue-600 text-white px-3 py-1.5 hover:bg-blue-700">Apply manual rewrite</button>
+        </div>
       </div>
     </div>
 
@@ -2854,6 +3241,37 @@ function buildCriterionRow(trial, c, ci) {
   // ---------- Inline original-text "was: ... revert" line ----------
   const textEl = card.querySelector("[data-text]");
   const originalLine = card.querySelector("[data-original-line]");
+  const clarifyManual = card.querySelector("[data-clarify-manual]");
+  const setClarifyStatus = (message, className = "text-[10.5px] text-slate-500") => {
+    const el = card.querySelector("[data-clarify-status]");
+    if (!el) return;
+    el.textContent = message;
+    el.className = className;
+  };
+  const syncCriterionText = () => {
+    textEl.textContent = c.original_text;
+    if (clarifyManual) clarifyManual.value = c.original_text;
+  };
+  const applyCriterionRewrite = (nextText, { aiDraft = false } = {}) => {
+    const next = String(nextText || "").trim();
+    if (!next) {
+      setClarifyStatus("Criterion text cannot be empty.", "text-[10.5px] text-rose-600");
+      return false;
+    }
+    if (next === c.original_text) {
+      setClarifyStatus("No change to apply.", "text-[10.5px] text-slate-500");
+      return false;
+    }
+    if (!c.original_text_raw) c.original_text_raw = c.original_text;
+    c.original_text = next;
+    if (c.original_text_raw === c.original_text) delete c.original_text_raw;
+    syncCriterionText();
+    refreshOriginalLine();
+    markTrialEdited(trial);
+    if (aiDraft) markTrialAI(trial, `openai/${state.model}`);
+    setClarifyStatus("Applied.", "text-[10.5px] text-emerald-600");
+    return true;
+  };
   const refreshOriginalLine = () => {
     originalLine.innerHTML = "";
     if (c.original_text_raw && c.original_text_raw !== c.original_text) {
@@ -2864,7 +3282,7 @@ function buildCriterionRow(trial, c, ci) {
       div.querySelector("[data-clarify-revert]").addEventListener("click", () => {
         c.original_text = c.original_text_raw;
         delete c.original_text_raw;
-        textEl.textContent = c.original_text;
+        syncCriterionText();
         markTrialEdited(trial);
         refreshOriginalLine();
       });
@@ -2896,7 +3314,7 @@ function buildCriterionRow(trial, c, ci) {
   const statusBtn = card.querySelector("[data-status-toggle]");
   const paintStatus = () => {
     const cur = STATUS_CYCLE.find(s => s.id === c.status) || STATUS_CYCLE[0];
-    statusBtn.className = `text-[11px] font-semibold rounded-full px-3 py-1 border transition w-24 ${cur.cls}`;
+    statusBtn.className = `col-start-2 justify-self-start lg:col-start-auto lg:justify-self-auto shrink-0 text-[11px] font-semibold rounded-full px-3 py-1 border transition w-24 mt-0.5 ${cur.cls}`;
     statusBtn.textContent = cur.label;
     statusBtn.title = `Click to ${c.status === "active" ? "deactivate" : "activate"} this criterion`;
     card.classList.toggle("opacity-60", c.status === "inactive");
@@ -2924,43 +3342,59 @@ function buildCriterionRow(trial, c, ci) {
   const clarifyToggle = card.querySelector("[data-clarify-toggle]");
   const clarifyPanel  = card.querySelector("[data-clarify-panel]");
   const clarifyInput  = card.querySelector("[data-clarify-input]");
+  const clarifyApply  = card.querySelector("[data-clarify-apply]");
   const clarifyRun    = card.querySelector("[data-clarify-run]");
   const clarifyCancel = card.querySelector("[data-clarify-cancel]");
-  const clarifyStatus = card.querySelector("[data-clarify-status]");
+  let clarifyDraftText = "";
+  let clarifyDraftIsAI = false;
   clarifyToggle?.addEventListener("click", () => {
     const open = !clarifyPanel.classList.contains("hidden");
     clarifyPanel.classList.toggle("hidden", open);
-    if (!open) clarifyInput?.focus();
+    if (!open) {
+      syncCriterionText();
+      setClarifyStatus("");
+      clarifyDraftText = "";
+      clarifyDraftIsAI = false;
+      clarifyManual?.focus();
+    }
   });
-  clarifyCancel?.addEventListener("click", () => clarifyPanel.classList.add("hidden"));
+  clarifyManual?.addEventListener("input", () => {
+    if (clarifyManual.value !== clarifyDraftText) clarifyDraftIsAI = false;
+    setClarifyStatus("");
+  });
+  clarifyCancel?.addEventListener("click", () => {
+    clarifyPanel.classList.add("hidden");
+    syncCriterionText();
+    setClarifyStatus("");
+  });
+  clarifyApply?.addEventListener("click", () => {
+    const applied = applyCriterionRewrite(clarifyManual?.value || "", { aiDraft: clarifyDraftIsAI });
+    if (applied) {
+      clarifyDraftText = "";
+      clarifyDraftIsAI = false;
+      setTimeout(() => { clarifyPanel.classList.add("hidden"); setClarifyStatus(""); }, 700);
+    }
+  });
   clarifyRun?.addEventListener("click", async () => {
     if (!state.apiKey) {
-      clarifyStatus.textContent = "Save an OpenAI key first.";
-      clarifyStatus.className = "text-[10px] text-rose-600";
+      setClarifyStatus("Save an OpenAI key first.", "text-[10.5px] text-rose-600");
       return;
     }
     const userHint = (clarifyInput?.value || "").trim();
     clarifyRun.disabled = true;
-    clarifyStatus.textContent = "Rewriting…";
-    clarifyStatus.className = "text-[10px] text-slate-500 italic";
+    setClarifyStatus("Drafting...", "text-[10.5px] text-slate-500 italic");
     try {
       const newText = await clarifyCriterionWithLLM(trial, c, userHint);
       if (newText && newText !== c.original_text) {
-        if (!c.original_text_raw) c.original_text_raw = c.original_text;
-        c.original_text = newText;
-        textEl.textContent = newText;
-        markTrialAI(trial, `openai/${state.model}`);
-        refreshOriginalLine();
-        clarifyStatus.textContent = "Rewritten ✓";
-        clarifyStatus.className = "text-[10px] text-emerald-600";
-        setTimeout(() => { clarifyPanel.classList.add("hidden"); clarifyStatus.textContent = ""; }, 1200);
+        if (clarifyManual) clarifyManual.value = newText;
+        clarifyDraftText = newText;
+        clarifyDraftIsAI = true;
+        setClarifyStatus("Draft inserted. Review, edit if needed, then apply.", "text-[10.5px] text-emerald-600");
       } else {
-        clarifyStatus.textContent = "No change.";
-        clarifyStatus.className = "text-[10px] text-slate-500";
+        setClarifyStatus("No change suggested.", "text-[10.5px] text-slate-500");
       }
     } catch (e) {
-      clarifyStatus.textContent = `Error: ${e.message}`;
-      clarifyStatus.className = "text-[10px] text-rose-600";
+      setClarifyStatus(`Error: ${e.message}`, "text-[10.5px] text-rose-600");
     } finally {
       clarifyRun.disabled = false;
     }
@@ -2973,14 +3407,30 @@ function buildCriterionRow(trial, c, ci) {
 // self-contained. The prompt teaches the model to bake in the background
 // knowledge a downstream matcher would otherwise need to invent.
 async function clarifyCriterionWithLLM(trial, criterion, userHint) {
-  const sys = `You rewrite a SINGLE clinical-trial eligibility criterion so that it is fully explicit, unambiguous, and self-contained for a downstream patient-matching agent. Bake in the background clinical knowledge needed to evaluate it (e.g. resolve abbreviations, name the staging system, give numeric thresholds when widely accepted, name the relevant lab/imaging modality). Keep it ONE sentence (or two short ones). Do NOT add commentary. Preserve the original meaning — NEVER make it more or less restrictive. Return STRICT JSON: {"rewritten":"...string..."}.`;
+  const sys = `You rewrite a SINGLE clinical-trial eligibility criterion so it is fully explicit, unambiguous, self-contained, and faithful to the TrialSchema constraint used by a downstream patient-matching agent.
+
+Rules:
+- Preserve the original meaning exactly. NEVER make the criterion more or less restrictive.
+- Preserve quantitative operator strictness exactly: ">" stays strictly greater than, ">=" stays greater than or equal to, "<" stays strictly less than, "<=" stays less than or equal to.
+- If a boundary case matters, state it explicitly (e.g. "exactly 18 years old does not satisfy" for age > 18; "18 years old satisfies" for age >= 18).
+- Mirror the supplied structured_target when present: metric, operator, value, upper_value, and unit must match the wording.
+- Include the evaluation timepoint when present in the source or structured target context (e.g. at eligibility assessment, at enrollment, at inclusion, before eligibility assessment). If no timepoint is given, use "at eligibility assessment" for demographics/labs/performance status and do not invent protocol-specific dates.
+- Resolve abbreviations only when clinically safe and keep the abbreviation when useful (e.g. "WHO performance status", "PSMA scan", "HPV/p16").
+- For composite AND/OR criteria, keep all logical alternatives explicit; do not simplify away branches.
+- Keep it one sentence, or two short sentences when a boundary case needs a second sentence.
+Return STRICT JSON: {"rewritten":"...string..."}. No prose.`;
   const m = trial.metadata || {};
+  const structured = criterion.evaluation_type === "quantitative" && criterion.structured_target
+    ? JSON.stringify(criterion.structured_target)
+    : "";
   const ctx = [
     m.brief_title ? `Trial title: ${m.brief_title}` : "",
     m.conditions?.length ? `Conditions: ${m.conditions.join(", ")}` : "",
     `Criterion type: ${criterion.type}`,
     `Criterion category: ${criterion.category}`,
+    criterion.original_text_raw ? `Verbatim source text: ${criterion.original_text_raw}` : "",
     `Original text: ${criterion.original_text}`,
+    structured ? `Structured target to preserve: ${structured}` : "",
     userHint ? `\nUser guidance (apply this when rewriting): ${userHint}` : "",
   ].filter(Boolean).join("\n");
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -3291,7 +3741,7 @@ function tsv1Criterion(c, idx) {
     clarified_text: c.original_text_raw && c.original_text_raw !== c.original_text
       ? String(c.original_text) : null,
     concept,
-    assertion: "present",
+    assertion: ["present", "absent", "unknown"].includes(c.assertion) ? c.assertion : "present",
     constraint: tsv1Constraint(c),
     routing: {
       primary:  (c.routing?.primary_docs  || []).map(d => coerceDocIdToProfile(d)).filter(Boolean).map(tsv1WireDocId),
@@ -3362,10 +3812,10 @@ function toV1Envelope(trials) {
 // The normalized care-path enum (id, label, aliases) active at export time.
 // Round-trips so re-importing restores the buckets and their aliases.
 function tsv1CarePathCatalog() {
-  return (state.carePaths || []).map(cp => ({
-    id: String(cp.id),
-    label: String(cp.label || cp.id),
-    aliases: Array.isArray(cp.aliases) ? cp.aliases.map(a => String(a).toLowerCase().trim()).filter(Boolean) : [],
+  return (state.carePaths || []).map(normalizeCarePathEntry).filter(Boolean).map(cp => ({
+    id: cp.id,
+    label: cp.label,
+    aliases: cp.aliases,
   }));
 }
 
@@ -3417,6 +3867,7 @@ function fromV1Trial(v) {
       category: cat,
       priority_level: c.rank || (i + 1),
       status: c.enabled === false ? "inactive" : "active",
+      assertion: ["present", "absent", "unknown"].includes(c.assertion) ? c.assertion : "present",
       routing: {
         primary_docs:  (c.routing?.primary  || []).map(tsv1InternalDocId).map(coerceDocIdToProfile).filter(Boolean),
         fallback_docs: (c.routing?.fallback || []).map(tsv1InternalDocId).map(coerceDocIdToProfile).filter(Boolean),
@@ -3452,15 +3903,14 @@ function fromV1Envelope(parsed) {
   // survive editing a previously exported file.
   if (Array.isArray(parsed.care_path_catalog) && parsed.care_path_catalog.length) {
     const byId = Object.fromEntries(state.carePaths.map(c => [c.id, c]));
-    parsed.care_path_catalog.forEach(cp => {
-      const id = String(cp.id || slugifyCarePath(cp.label || "")).toLowerCase();
-      if (!id) return;
-      const label = String(cp.label || id);
-      const aliases = Array.isArray(cp.aliases) ? cp.aliases.map(a => String(a).toLowerCase().trim()).filter(Boolean) : [];
-      if (byId[id]) {
-        byId[id].aliases = [...new Set([...(byId[id].aliases || []), ...aliases])];
+    parsed.care_path_catalog.map(cp => normalizeCarePathEntry({ ...cp, _normalized: true })).filter(Boolean).forEach(cp => {
+      if (byId[cp.id]) {
+        byId[cp.id].label = cp.label || byId[cp.id].label;
+        byId[cp.id].aliases = uniqueCarePathAliases([...(byId[cp.id].aliases || []), ...(cp.aliases || [])]);
+        byId[cp.id]._normalized = true;
+        delete byId[cp.id]._provisional;
       } else {
-        byId[id] = { id, label, aliases };
+        byId[cp.id] = cp;
       }
     });
     state.carePaths = Object.values(byId);
@@ -3561,7 +4011,13 @@ document.addEventListener("DOMContentLoaded", () => {
   updateProcessButtonLabel();
   document.getElementById("processBtn").addEventListener("click", runQueue);
   document.getElementById("stopBtn").addEventListener("click", () => {
+    if (!state.running) return;
     state.abort = true;
+    const stopBtn = document.getElementById("stopBtn");
+    stopBtn.disabled = true;
+    stopBtn.textContent = "Stopping…";
+    setProgress(100, "Stopping…");
+    if (state._abortController) state._abortController.abort();
     if (state._sleepCancel) state._sleepCancel();
   });
   document.getElementById("exportBtn").addEventListener("click", exportUnified);

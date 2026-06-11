@@ -12,7 +12,7 @@
     "generated_at":    { "type": "string", "format": "date-time" },
     "generator":       { "$ref": "#/$defs/Generator" },
     "routing_profile": { "$ref": "#/$defs/RoutingProfile" },
-    "care_path_catalog": { "type": "array", "items": { "$ref": "#/$defs/CarePathCatalogEntry" }, "description": "Optional. The normalized care-path enum (clinical-domain buckets, e.g. breast_cancer, heart_failure) active when this export was generated. Trials reference these via care_path_ids. Persisted so manual assignments and aliases survive a re-import." },
+    "care_path_catalog": { "type": "array", "items": { "$ref": "#/$defs/CarePathCatalogEntry" }, "description": "Optional. The normalized care-path enum active when this export was generated. Trials reference these via care_path_ids. Persisted so English display names, assignments, and original source-value aliases survive a re-import." },
     "trial_count":     { "type": "integer", "minimum": 0 },
     "trials":          { "type": "array", "items": { "$ref": "#/$defs/Trial" } },
     "extensions":      { "$ref": "#/$defs/Extensions" }
@@ -168,13 +168,13 @@
 
     "CarePathCatalogEntry": {
       "type": "object",
-      "description": "A normalized care-path bucket in the export-level enum. Trials reference it by id via care_path_ids. Aliases capture cross-language / synonym spellings used for auto-assignment.",
+      "description": "A normalized care-path bucket in the export-level enum. Trials reference it by id via care_path_ids. The id and label are English; aliases capture original source values and cross-language spellings used for auto-assignment.",
       "required": ["id", "label"],
       "additionalProperties": false,
       "properties": {
-        "id":      { "type": "string", "pattern": "^[a-z0-9][a-z0-9_]*$", "description": "Stable snake_case id, e.g. breast_cancer." },
-        "label":   { "type": "string", "description": "Human-readable label, e.g. \"Breast cancer\"." },
-        "aliases": { "type": "array", "items": { "type": "string" }, "description": "Lowercase synonyms/spellings across languages used for alias-based auto-assignment." },
+        "id":      { "type": "string", "pattern": "^[a-z0-9][a-z0-9_]*$", "description": "Stable English snake_case id." },
+        "label":   { "type": "string", "description": "English human-readable display name." },
+        "aliases": { "type": "array", "items": { "type": "string" }, "description": "Original source care-path values plus synonyms/spellings used for alias-based auto-assignment." },
         "concept": { "$ref": "#/$defs/Coding", "description": "Optional condition-domain anchor (typically a SNOMED CT code)." }
       }
     },
@@ -189,8 +189,8 @@
         "enabled":        { "type": "boolean", "default": true, "description": "User toggle. Disabled criteria MUST be skipped by the matcher." },
         "rank":           { "type": "integer", "minimum": 1, "description": "1..N position in the run order. Lower runs first." },
 
-        "source_text":     { "type": "string", "description": "Verbatim original criterion text. Immutable after extraction." },
-        "clarified_text":  { "type": ["string", "null"], "description": "Optional LLM-rewritten, unambiguous version of the criterion. Consumers SHOULD prefer `clarified_text ?? source_text`." },
+        "source_text":     { "type": "string", "description": "Verbatim original criterion text in the source language. Immutable after extraction; do not overwrite it with a clarified, translated, or manually rewritten version." },
+        "clarified_text":  { "type": ["string", "null"], "description": "Optional agent-facing rewrite of the same criterion, typically in English, made explicit and unambiguous for patient matching. It MUST preserve the exact clinical meaning, thresholds, negation, and logic of source_text. Consumers SHOULD prefer `clarified_text ?? source_text` for matching while retaining source_text for audit, debugging, and reprocessing." },
 
         "concept":   { "$ref": "#/$defs/Concept" },
         "assertion": {
