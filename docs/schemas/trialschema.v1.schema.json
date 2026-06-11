@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://trialschema.org/v1/export.schema.json",
   "title": "TrialSchema Export",
-  "description": "A portable, agent-friendly representation of clinical-trial eligibility designed for automated patient matching. Domain-neutral (oncology, cardiology, metabolic, rare disease, ...) and standards-aligned: a deliberate subset of HL7 FHIR R5 ResearchStudy with eligibility-focused additions, FHIR-shaped Codings, UCUM units, and an explicit user-defined document routing profile. Free-text fallbacks remain valid everywhere so end users never have to hand-curate ontology codes.",
+  "description": "A portable, agent-friendly representation of clinical-trial eligibility designed for automated patient matching. TrialSchema makes explicit what to check (criteria concepts and assertions), where to look (document types, default visit order, and criterion-level routing), how to evaluate (constraints, thresholds, polarity, rank, and fallbacks), and which normalized care path a trial belongs to (care_path_ids). Domain-neutral (oncology, cardiology, metabolic, rare disease, ...) and standards-aligned: a deliberate subset of HL7 FHIR R5 ResearchStudy with eligibility-focused additions, FHIR-shaped Codings, UCUM units, and an explicit user-defined document routing profile. Free-text fallbacks remain valid everywhere so end users never have to hand-curate ontology codes.",
   "type": "object",
   "required": ["format", "format_version", "generated_at", "routing_profile", "trials"],
   "additionalProperties": false,
@@ -11,8 +11,8 @@
     "format_version":  { "type": "string", "pattern": "^1\\.\\d+$", "description": "Semantic version of the format. Minor versions are additive." },
     "generated_at":    { "type": "string", "format": "date-time" },
     "generator":       { "$ref": "#/$defs/Generator" },
-    "routing_profile": { "$ref": "#/$defs/RoutingProfile" },
-    "care_path_catalog": { "type": "array", "items": { "$ref": "#/$defs/CarePathCatalogEntry" }, "description": "Optional. The normalized care-path enum active when this export was generated. Trials reference these via care_path_ids. Persisted so English display names, assignments, and original source-value aliases survive a re-import." },
+    "routing_profile": { "$ref": "#/$defs/RoutingProfile", "description": "The export-level answer to where a matching agent may look: available patient-document types, default scan set, and default visit order." },
+    "care_path_catalog": { "type": "array", "items": { "$ref": "#/$defs/CarePathCatalogEntry" }, "description": "Optional normalized care paths active when this export was generated. Trials reference these via care_path_ids as a first-pass matching filter before criterion evaluation. Persisted so English display names, assignments, and original source-value aliases survive a re-import." },
     "trial_count":     { "type": "integer", "minimum": 0 },
     "trials":          { "type": "array", "items": { "$ref": "#/$defs/Trial" } },
     "extensions":      { "$ref": "#/$defs/Extensions" }
@@ -38,22 +38,22 @@
 
     "RoutingProfile": {
       "type": "object",
-      "description": "The document universe and default patient-document visit order active when this export was generated. Criterion-level routing references these document type ids.",
+      "description": "The document universe that answers where to look. It defines available patient-document types, the default maximum scan set for most criteria, and the default visit order used when a criterion has no more specific routing.",
       "required": ["id", "document_type_system", "default_scan_set", "default_visit_order", "document_types"],
       "additionalProperties": false,
       "properties": {
         "id":                   { "type": "string", "pattern": "^[a-z][a-z0-9-]*$", "description": "Stable profile id, e.g. default-clinical." },
         "label":                { "type": "string" },
         "document_type_system": { "type": "string", "format": "uri", "description": "Canonical URI for the document-type id namespace." },
-        "default_scan_set":     { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/DocumentType" }, "uniqueItems": true, "description": "Default maximum document set to scan for most criteria. Order follows default_visit_order. Criteria may override with primary/fallback routing when clinically necessary." },
-        "default_visit_order":  { "type": "array", "items": { "$ref": "#/$defs/DocumentType" }, "uniqueItems": true, "description": "General order in which an agent should visit patient documents when no criterion-specific priority overrides it." },
+        "default_scan_set":     { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/DocumentType" }, "uniqueItems": true, "description": "Default maximum document set to scan for most criteria. Agents should inspect these document types first, ordered by default_visit_order, unless criterion.routing gives a more specific primary/fallback route." },
+        "default_visit_order":  { "type": "array", "items": { "$ref": "#/$defs/DocumentType" }, "uniqueItems": true, "description": "General order in which a matching agent should visit patient documents. Criterion-level routing may narrow the set, but this order remains the tie-breaker." },
         "document_types":       { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/RoutingDocumentType" } }
       }
     },
 
     "RoutingDocumentType": {
       "type": "object",
-      "description": "A document type available to the extractor and downstream matching agent. Keep this lean: order lives in routing_profile.default_visit_order, while criterion-level routing states where each rule should look.",
+      "description": "A patient-document type available to the extractor and downstream matching agent. Labels and hints explain what content is usually found there; order lives in routing_profile.default_visit_order, while criterion-level routing states where each rule should look.",
       "required": ["id", "label"],
       "additionalProperties": false,
       "properties": {
@@ -138,8 +138,8 @@
           }
         },
 
-        "care_path_ids": { "type": "array", "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_]*$" }, "uniqueItems": true, "description": "Optional but first-class trial-level matching filter. Ids of the normalized care paths (from care_path_catalog) this trial belongs to. Matching agents should evaluate criteria only when the patient care path matches at least one of these ids; if omitted, care-path filtering cannot be applied. Persisted so manual assignments survive a re-import." },
-        "criteria":  { "type": "array", "items": { "$ref": "#/$defs/Criterion" }, "description": "Ordered eligibility rules. Each item should represent a patient-level inclusion or exclusion requirement, not merely trial scope such as a listed condition, intervention, or care-path bucket. Array index === run order; the first criterion runs first.", "$comment": "FHIR R5: ResearchStudy.recruitment.eligibility (resolved). v1 represents each criterion inline rather than via a Group reference." },
+        "care_path_ids": { "type": "array", "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_]*$" }, "uniqueItems": true, "description": "Optional but first-class trial-level matching filter. Ids of the normalized care paths (from care_path_catalog) this trial belongs to, for example breast_cancer or heart_failure. Matching agents should evaluate criteria only when the patient care path matches at least one of these ids; if omitted, care-path filtering cannot be applied. Persisted so manual assignments survive a re-import." },
+        "criteria":  { "type": "array", "items": { "$ref": "#/$defs/Criterion" }, "description": "Ordered, agent-friendly eligibility rules. Each item should represent one patient-level inclusion or exclusion requirement and make explicit what to check, how to evaluate it, and where to look. Do not use criteria for mere trial scope such as a listed condition, intervention, or care-path assignment. Array index === run order; the first criterion runs first.", "$comment": "FHIR R5: ResearchStudy.recruitment.eligibility (resolved). v1 represents each criterion inline rather than via a Group reference." },
 
         "provenance": { "$ref": "#/$defs/TrialProvenance" },
         "extensions": { "$ref": "#/$defs/Extensions" }
@@ -168,7 +168,7 @@
 
     "CarePathCatalogEntry": {
       "type": "object",
-      "description": "A normalized care-path bucket in the export-level enum. Trials reference it by id via care_path_ids. The id and label are English; aliases capture original source values and cross-language spellings used for auto-assignment.",
+      "description": "A normalized care path in the export-level enum, used as a first-pass matching filter before evaluating criteria. TrialSchema v1 stores stable care-path references such as breast_cancer, heart_failure, or type_2_diabetes; detailed pathway phases or actions can be modeled in extensions or future versions when needed. Trials reference the path by id via care_path_ids. The id and label are English; aliases capture original source values and cross-language spellings used for auto-assignment.",
       "required": ["id", "label"],
       "additionalProperties": false,
       "properties": {
@@ -187,7 +187,7 @@
         "id":             { "type": "string", "description": "Stable identifier within the trial. Default convention: \"INC-01\", \"EXC-01\", …" },
         "kind":           { "type": "string", "enum": ["inclusion", "exclusion"] },
         "enabled":        { "type": "boolean", "default": true, "description": "User toggle. Disabled criteria MUST be skipped by the matcher." },
-        "rank":           { "type": "integer", "minimum": 1, "description": "1..N position in the run order. Lower runs first." },
+        "rank":           { "type": "integer", "minimum": 1, "description": "1..N position in the run order. Lower runs first, allowing a matching agent to check cheap or decisive criteria earlier." },
 
         "source_text":     { "type": "string", "description": "Verbatim original criterion text in the source language. Immutable after extraction; do not overwrite it with a clarified, translated, or manually rewritten version." },
         "clarified_text":  { "type": ["string", "null"], "description": "Optional agent-facing rewrite of the same criterion, typically in English, made explicit and unambiguous for patient matching. It MUST preserve the exact clinical meaning, thresholds, negation, and logic of source_text. Consumers SHOULD prefer `clarified_text ?? source_text` for matching while retaining source_text for audit, debugging, and reprocessing." },
@@ -202,7 +202,7 @@
         "constraint":  { "$ref": "#/$defs/Constraint" },
 
         "routing":   { "$ref": "#/$defs/Routing" },
-        "guidance":  { "type": "string", "description": "Free-text guidance for the matching agent. Strongly recommended when the routing includes \"other\"." },
+        "guidance":  { "type": "string", "description": "Free-text guidance for the matching agent when source_text, clarified_text, concept, assertion, constraint, and routing are not enough. Strongly recommended when the routing includes \"other\"." },
 
         "provenance": { "$ref": "#/$defs/Provenance" },
         "extensions": { "$ref": "#/$defs/Extensions" }
@@ -213,7 +213,7 @@
       "type": "object",
       "required": ["domain"],
       "additionalProperties": false,
-      "description": "What the criterion is about, decoupled from where to look (which lives in `routing`).",
+      "description": "What the criterion is about. This answers what to check and is decoupled from where to look (which lives in routing) and how to evaluate (which lives in constraint/assertion).",
       "properties": {
         "domain": {
           "type": "string",
@@ -238,7 +238,7 @@
 
     "Constraint": {
       "type": "object",
-      "description": "Tagged union describing how the criterion evaluates against patient data. Use `kind: \"text\"` as a graceful fallback when no machine-evaluable form is available.",
+      "description": "Tagged union describing how the criterion evaluates against patient data: comparison, range, code-set, boolean, existence, or text fallback. Use `kind: \"text\"` as a graceful fallback when no machine-evaluable form is available.",
       "discriminator": { "propertyName": "kind" },
       "oneOf": [
         {
@@ -304,7 +304,7 @@
 
     "Routing": {
       "type": "object",
-      "description": "Criterion-specific routing over the export's top-level routing_profile: which patient-record document types the matcher should search first (`primary`) before falling back (`fallback`). Empty arrays mean no criterion-specific preference; use routing_profile.default_scan_set first, ordered by routing_profile.default_visit_order.",
+      "description": "Criterion-specific answer to where to look. It references the export's top-level routing_profile and tells the matcher which patient-record document types to search first (`primary`) before optional secondary routes (`fallback`). Empty arrays mean no criterion-specific preference; use routing_profile.default_scan_set first, ordered by routing_profile.default_visit_order.",
       "required": ["primary", "fallback"],
       "additionalProperties": false,
       "properties": {

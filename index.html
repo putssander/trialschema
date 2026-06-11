@@ -326,7 +326,7 @@
             <summary class="flex items-center justify-between gap-4">
               <div>
                 <h2 class="text-sm font-bold text-slate-900">Document Types &amp; Visit Order</h2>
-                <p class="text-xs text-slate-500">Default scan set and agent record order.</p>
+                <p class="text-xs text-slate-500">Where agents should look in the patient record.</p>
               </div>
               <svg viewBox="0 0 24 24" class="w-4 h-4 text-slate-400 transition-transform details-chevron" fill="none">
                 <path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
@@ -334,7 +334,7 @@
             </summary>
             <div class="mt-3">
               <div class="flex items-start justify-between gap-4 flex-wrap">
-                <p class="text-xs text-slate-500 max-w-3xl">Controls the documents the extractor may route to, the matrix columns, and the general agent visit order. The document types marked <span class="font-semibold text-emerald-700">default scan</span> are searched for most criteria.</p>
+                <p class="text-xs text-slate-500 max-w-3xl">Defines the patient-document types available to the extractor and matcher, the default scan set, and the general visit order. Criteria can still route to specific primary and fallback documents when a rule clearly belongs somewhere else.</p>
                 <div class="flex items-center gap-2">
                   <button id="addRoutingDocBtn" type="button" class="text-xs font-semibold rounded-lg bg-slate-900 text-white px-3 py-1.5 hover:bg-slate-700">+ Add document</button>
                   <button id="resetRoutingProfileBtn" type="button" class="text-xs font-semibold rounded-lg border border-slate-200 bg-white text-slate-700 px-3 py-1.5 hover:bg-slate-50">Reset default</button>
@@ -350,7 +350,7 @@
             <summary class="flex items-center justify-between gap-4">
               <div>
                 <h2 class="text-sm font-bold text-slate-900">Care Paths</h2>
-                <p class="text-xs text-slate-500">Clinical-domain buckets for matching.</p>
+                <p class="text-xs text-slate-500">Normalized care paths for first-pass matching.</p>
               </div>
               <svg viewBox="0 0 24 24" class="w-4 h-4 text-slate-400 transition-transform details-chevron" fill="none">
                 <path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
@@ -358,7 +358,7 @@
             </summary>
             <div class="mt-3">
               <div class="flex items-center justify-between gap-4 flex-wrap">
-                <p class="text-xs text-slate-500 max-w-3xl">Normalized clinical-domain enum used downstream for patient matching. Auto-detected from your upload and refined by the extractor; a trial can belong to several care paths.</p>
+                <p class="text-xs text-slate-500 max-w-3xl">Normalizes source care-path values into stable English care-path ids, such as breast cancer or heart failure. Matching agents can use these as a first-pass filter before evaluating detailed eligibility criteria; a trial can belong to several care paths.</p>
                 <div class="flex items-center gap-2">
                   <button id="detectCarePathsBtn" class="inline-flex items-center gap-1.5 text-xs font-semibold rounded-lg bg-slate-900 text-white px-3 py-1.5 hover:bg-slate-700 disabled:opacity-50">
                     <svg viewBox="0 0 24 24" class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1" stroke-linecap="round"/></svg>

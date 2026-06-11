@@ -7,8 +7,10 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
 const app = readFileSync(join(root, "app.js"), "utf8");
 const schema = readFileSync(join(root, "docs/schemas/trialschema.v1.schema.json"), "utf8");
+const readme = readFileSync(join(root, "README.md"), "utf8");
 const compactApp = app.replace(/\s+/g, " ");
 const compactSchema = schema.replace(/\s+/g, " ");
+const compactReadme = readme.replace(/\s+/g, " ");
 
 function includesText(haystack, needle) {
   return haystack.replace(/\s+/g, " ").includes(needle.replace(/\s+/g, " "));
@@ -148,6 +150,18 @@ assert.ok(
 assert.ok(
   compactSchema.includes("retaining source_text for audit, debugging, and reprocessing"),
   "schema should keep raw source text valuable for audit and recovery",
+);
+assert.ok(
+  compactSchema.includes("what to check") && compactSchema.includes("where to look") && compactSchema.includes("how to evaluate"),
+  "schema should communicate the core agent matching contract",
+);
+assert.ok(
+  compactSchema.includes("A normalized care path in the export-level enum"),
+  "schema should describe care paths as care paths, not only generic buckets",
+);
+assert.ok(
+  compactReadme.includes("What to check") && compactReadme.includes("Where to look") && compactReadme.includes("How to evaluate"),
+  "README should explain the schema goals for matching agents",
 );
 
 console.log("Prompt quality checks passed.");

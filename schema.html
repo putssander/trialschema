@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>TrialSchema · v1 Reference</title>
-  <meta name="description" content="The TrialSchema v1 format: a portable, agent-ready representation of clinical-trial eligibility for AI agents and automated matching systems." />
+  <meta name="description" content="The TrialSchema v1 format: a portable, agent-ready representation of what to check, where to look, and how to evaluate clinical-trial eligibility for automated matching." />
   <link rel="icon" type="image/svg+xml" href="docs/brand/favicon.svg" />
   <meta name="theme-color" content="#0B2D6B" />
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -84,6 +84,12 @@
           The primary consumer is not a human reader. It is an AI agent, matching engine, or workflow system that
           needs explicit trial logic, deterministic routing hints, and a stable wire format it can process end-to-end.
         </p>
+        <div class="mt-5 grid sm:grid-cols-2 gap-3 text-sm">
+          <div class="bg-white border border-slate-200 rounded-xl p-3"><b class="text-slate-900">What to check</b><br><span class="text-slate-600">Each criterion names the patient-level concept and assertion polarity.</span></div>
+          <div class="bg-white border border-slate-200 rounded-xl p-3"><b class="text-slate-900">Where to look</b><br><span class="text-slate-600">Document types, visit order, and criterion routing direct the agent to the right record sources.</span></div>
+          <div class="bg-white border border-slate-200 rounded-xl p-3"><b class="text-slate-900">How to evaluate</b><br><span class="text-slate-600">Constraints encode comparisons, ranges, code sets, boolean checks, existence checks, or text fallback.</span></div>
+          <div class="bg-white border border-slate-200 rounded-xl p-3"><b class="text-slate-900">Which trials first</b><br><span class="text-slate-600">Care paths are normalized for first-pass trial filtering.</span></div>
+        </div>
 
         <div class="mt-5 p-4 rounded-xl border" style="background:var(--ts-ice);border-color:rgba(11,45,107,0.14)">
           <div class="text-xs font-semibold uppercase tracking-wider" style="color:var(--ts-teal)">Source of truth</div>
@@ -95,11 +101,11 @@
       <section id="design" class="anchor-target">
         <h2 class="text-xl font-bold text-slate-900">2. Design principles</h2>
         <ul class="mt-3 space-y-2 text-[14px] text-slate-700 list-disc pl-5">
-          <li><b>Agent-first.</b> The target runtime is an AI agent or matching system, so the format favors explicit execution semantics over narrative readability.</li>
+          <li><b>Agent-first.</b> The target runtime is an AI agent or matching system, so the format makes what to check, where to look, and how to evaluate explicit.</li>
           <li><b>Domain-neutral.</b> Oncology, cardiology, metabolic, rare disease — the format makes no assumptions about specialty or treatment modality.</li>
           <li><b>Standards-aligned, not standards-bound.</b> Codings follow FHIR shape (<code>system</code>+<code>code</code>+<code>display</code>); units use UCUM. But every place that accepts a code also accepts plain text — <b>end users never have to map criteria to ontologies by hand</b>.</li>
           <li><b>Graceful degradation.</b> When a constraint cannot be machine-evaluated, the extractor emits <code>{"kind": "text", "description": …}</code>. The matcher always has the verbatim <code>source_text</code> as ultimate fallback.</li>
-          <li><b>Decoupled <em>what</em> from <em>where</em>.</b> A criterion's clinical concept (its <code>concept</code>) is independent of the document types the matcher should search (its <code>routing</code>).</li>
+          <li><b>Decoupled responsibilities.</b> A criterion's clinical concept says <em>what</em> to check, <code>constraint</code> and <code>assertion</code> say <em>how</em> to evaluate it, and <code>routing</code> says <em>where</em> to look.</li>
           <li><b>Human-in-the-loop friendly.</b> Every criterion has an <code>enabled</code> toggle, a <code>rank</code>, an editable <code>clarified_text</code>, and free-text <code>guidance</code>.</li>
           <li><b>Minimal surface.</b> Every field earns its place. Extension data goes in namespaced <code>extensions</code> bags.</li>
         </ul>
@@ -114,6 +120,7 @@
   <span class="k">"generated_at"</span>:   <span class="s">"2026-05-21T12:00:00Z"</span>,
   <span class="k">"generator"</span>:      <span class="b">{</span> <span class="k">"name"</span>: <span class="s">"trialschema-ui"</span>, <span class="k">"version"</span>: <span class="s">"1.0.0"</span> <span class="b">}</span>,
   <span class="k">"routing_profile"</span>: <span class="b">{</span> <span class="c">/* document types + default scan set + visit order */</span> <span class="b">}</span>,
+  <span class="k">"care_path_catalog"</span>: <span class="b">[</span> <span class="c">/* normalized care paths */</span> <span class="b">]</span>,
   <span class="k">"trial_count"</span>:    <span class="n">1</span>,
   <span class="k">"trials"</span>:         <span class="b">[</span> <span class="c">/* Trial objects */</span> <span class="b">]</span>
 <span class="b">}</span></pre>
@@ -125,6 +132,7 @@
             <tr><td><code>generated_at</code></td><td>date-time</td><td>ISO-8601 timestamp.</td></tr>
             <tr><td><code>generator</code></td><td>object</td><td>Name + version of the producing tool.</td></tr>
             <tr><td><code>routing_profile</code></td><td>RoutingProfile</td><td>Document types, labels, hints, default scan set, and general agent visit order used by extraction and matching.</td></tr>
+            <tr><td><code>care_path_catalog</code></td><td>CarePathCatalogEntry[]</td><td>Optional normalized care paths used as a first-pass matching filter.</td></tr>
             <tr><td><code>trials</code></td><td>Trial[]</td><td>Order is preserved.</td></tr>
           </tbody>
         </table>
@@ -155,18 +163,14 @@
   <span class="k">"enabled"</span>:     <span class="b">true</span>,
   <span class="k">"title"</span>:       <span class="s">"PALOMA-3"</span>,
   <span class="k">"identifiers"</span>: <span class="b">[</span><span class="b">{</span> <span class="k">"system"</span>: <span class="s">"https://clinicaltrials.gov"</span>, <span class="k">"value"</span>: <span class="s">"NCT04567890"</span> <span class="b">}</span><span class="b">]</span>,
-  <span class="k">"phase"</span>:       <span class="s">"phase-3"</span>,
   <span class="k">"sponsor"</span>:     <span class="b">{</span> <span class="k">"name"</span>: <span class="s">"Pfizer"</span> <span class="b">}</span>,
   <span class="k">"conditions"</span>:  <span class="b">[</span><span class="b">{</span> <span class="k">"system"</span>: <span class="s">"http://snomed.info/sct"</span>, <span class="k">"code"</span>: <span class="s">"254837009"</span>, <span class="k">"display"</span>: <span class="s">"Malignant neoplasm of breast"</span> <span class="b">}</span><span class="b">]</span>,
   <span class="k">"interventions"</span>: <span class="b">[</span><span class="b">{</span> <span class="k">"type"</span>: <span class="s">"drug"</span>, <span class="k">"label"</span>: <span class="s">"palbociclib"</span>, <span class="k">"code"</span>: <span class="b">{</span> <span class="k">"system"</span>: <span class="s">"…/rxnorm"</span>, <span class="k">"code"</span>: <span class="s">"1601480"</span> <span class="b">}</span> <span class="b">}</span><span class="b">]</span>,
-  <span class="k">"enrollment"</span>:  <span class="b">{</span> <span class="k">"target"</span>: <span class="n">521</span> <span class="b">}</span>,
   <span class="k">"lifecycle"</span>:   <span class="b">{</span>
-    <span class="k">"status"</span>:                  <span class="s">"recruiting"</span>,
-    <span class="k">"start_date"</span>:              <span class="s">"2013-10-07"</span>,
-    <span class="k">"primary_completion_date"</span>: <span class="s">"2017-09-01"</span>,
-    <span class="k">"completion_date"</span>:         <span class="s">""</span>
+    <span class="k">"start_date"</span>:      <span class="s">"2013-10-07"</span>,
+    <span class="k">"completion_date"</span>: <span class="s">""</span>
   <span class="b">}</span>,
-  <span class="k">"care_path"</span>:   <span class="b">{</span> <span class="c">/* see §10 */</span> <span class="b">}</span>,
+  <span class="k">"care_path_ids"</span>: <span class="b">[</span><span class="s">"breast_cancer"</span><span class="b">]</span>,
   <span class="k">"criteria"</span>:    <span class="b">[</span> <span class="c">/* Criterion[] — array index === run order */</span> <span class="b">]</span>
 <span class="b">}</span></pre>
 
@@ -175,26 +179,24 @@
           <tbody class="text-slate-700">
             <tr><td><code>id</code></td><td>string</td><td>Stable primary key. NCT id recommended.</td></tr>
             <tr><td><code>enabled</code></td><td>boolean</td><td>Matcher inclusion toggle, independent of recruitment status.</td></tr>
-            <tr><td><code>phase</code></td><td>enum</td><td><code>n-a · early-phase-1 · phase-1 · phase-1-2 · phase-2 · phase-2-3 · phase-3 · phase-4 · unknown</code></td></tr>
-            <tr><td><code>lifecycle.status</code></td><td>enum</td><td>FHIR ResearchStudy.status-aligned: <code>not-yet-recruiting · recruiting · active-not-recruiting · completed · suspended · terminated · withdrawn · unknown</code></td></tr>
             <tr><td><code>conditions</code></td><td>Coding[]</td><td>SNOMED CT recommended; free-text fallback allowed.</td></tr>
             <tr><td><code>interventions</code></td><td>Intervention[]</td><td><code>{ type, label, code? }</code>. <code>type ∈ drug · device · procedure · biological · behavioral · radiation · diagnostic-test · other</code>.</td></tr>
+            <tr><td><code>care_path_ids</code></td><td>string[]</td><td>Optional normalized care paths from <code>care_path_catalog</code> for first-pass matching.</td></tr>
           </tbody>
         </table>
       </section>
 
       <section id="criterion" class="anchor-target">
         <h2 class="text-xl font-bold text-slate-900">6. Criterion</h2>
-        <p class="mt-2 text-sm text-slate-600">A single eligibility rule. The shape decouples <em>what</em> the criterion is about (<code>concept</code>), <em>how</em> to evaluate it (<code>constraint</code>, <code>assertion</code>), and <em>where</em> to look (<code>routing</code>).</p>
+        <p class="mt-2 text-sm text-slate-600">A single patient-level eligibility rule. The shape decouples <em>what</em> the criterion is about (<code>concept</code>), <em>how</em> to evaluate it (<code>constraint</code>, <code>assertion</code>), and <em>where</em> to look (<code>routing</code>). The raw source text remains available for audit, while <code>clarified_text</code> can carry the more explicit agent-facing rewrite.</p>
 <pre class="mt-3 bg-white border border-slate-200 rounded-xl p-4 text-[12.5px] overflow-x-auto"><span class="b">{</span>
   <span class="k">"id"</span>:             <span class="s">"INC-03"</span>,
   <span class="k">"kind"</span>:           <span class="s">"inclusion"</span>,           <span class="c">// inclusion | exclusion</span>
   <span class="k">"enabled"</span>:        <span class="b">true</span>,
   <span class="k">"rank"</span>:           <span class="n">3</span>,                       <span class="c">// 1..N run order</span>
-  <span class="k">"cost_tier"</span>:      <span class="n">1</span>,                       <span class="c">// optional 1..5 hint</span>
 
   <span class="k">"source_text"</span>:    <span class="s">"Creatinine clearance ≥ 50 mL/min within 14 days of screening"</span>,
-  <span class="k">"clarified_text"</span>: <span class="b">null</span>,                    <span class="c">// optional LLM rewrite</span>
+  <span class="k">"clarified_text"</span>: <span class="s">"Creatinine clearance must be at least 50 mL/min, measured within 14 days before screening."</span>,
 
   <span class="k">"concept"</span>: <span class="b">{</span>
     <span class="k">"domain"</span>: <span class="s">"observation"</span>,           <span class="c">// see Concept domains below</span>
@@ -208,7 +210,6 @@
     <span class="k">"operator"</span>: <span class="s">">="</span>,
     <span class="k">"quantity"</span>: <span class="b">{</span> <span class="k">"value"</span>: <span class="n">50</span>, <span class="k">"unit"</span>: <span class="s">"mL/min"</span>, <span class="k">"system"</span>: <span class="s">"http://unitsofmeasure.org"</span>, <span class="k">"code"</span>: <span class="s">"mL/min"</span> <span class="b">}</span>
   <span class="b">}</span>,
-  <span class="k">"time_window"</span>: <span class="b">{</span> <span class="k">"anchor"</span>: <span class="s">"screening"</span>, <span class="k">"before"</span>: <span class="b">{</span> <span class="k">"value"</span>: <span class="n">14</span>, <span class="k">"unit"</span>: <span class="s">"day"</span>, <span class="k">"code"</span>: <span class="s">"d"</span> <span class="b">}</span>, <span class="k">"recency"</span>: <span class="s">"most-recent"</span> <span class="b">}</span>,
 
   <span class="k">"routing"</span>:  <span class="b">{</span> <span class="k">"primary"</span>: <span class="b">[</span><span class="s">"core-lab"</span>, <span class="s">"intake-notes"</span>, <span class="s">"mdt-notes"</span><span class="b">]</span>, <span class="k">"fallback"</span>: <span class="b">[]</span> <span class="b">}</span>,
   <span class="k">"guidance"</span>: <span class="s">""</span>,
@@ -280,7 +281,7 @@
 
       <section id="routing" class="anchor-target">
         <h2 class="text-xl font-bold text-slate-900">8. Routing</h2>
-        <p class="mt-2 text-sm text-slate-600">Routing has two layers. The top-level <code>routing_profile</code> defines the document types available in this export, the default scan set for most criteria, and the general agent visit order. Each criterion's <code>routing</code> then marks which of those documents are <code>primary</code> or <code>fallback</code> for that specific rule. Empty arrays mean no criterion-specific preference; use <code>routing_profile.default_scan_set</code> in <code>default_visit_order</code>.</p>
+        <p class="mt-2 text-sm text-slate-600">Routing is the schema's answer to <em>where should the agent look?</em> It has two layers. The top-level <code>routing_profile</code> defines the patient-document types available in this export, the default scan set for most criteria, and the general visit order. Each criterion's <code>routing</code> then marks which of those documents are <code>primary</code> or <code>fallback</code> for that specific rule. Empty arrays mean no criterion-specific preference; use <code>routing_profile.default_scan_set</code> in <code>default_visit_order</code>.</p>
 
 <pre class="mt-3 bg-white border border-slate-200 rounded-xl p-4 text-[12.5px] overflow-x-auto"><span class="b">{</span>
   <span class="k">"routing_profile"</span>: <span class="b">{</span>
@@ -318,20 +319,20 @@
 
       <section id="carepath" class="anchor-target">
         <h2 class="text-xl font-bold text-slate-900">9. Care path <span class="pill" style="background:#EAF8FB;color:#0B2D6B">optional</span></h2>
-        <p class="mt-2 text-sm text-slate-700">A <em>care path</em> is the standard ordered sequence of clinical phases a patient with the trial's condition typically moves through (diagnosis → staging → treatment → follow-up). It is <strong>orthogonal to eligibility logic</strong>: it lets a matcher reason about <em>where in a treatment journey</em> a candidate sits, separately from whether they meet the criteria.</p>
+        <p class="mt-2 text-sm text-slate-700">A <em>care path</em> is the clinical path or care domain a trial belongs to. TrialSchema uses it as a first-pass matching signal: <em>should this trial be considered for this patient path before the agent spends work on detailed criteria?</em></p>
 
-        <p class="mt-2 text-sm text-slate-700">The pattern is universal — oncology pathways, radiation-oncology protocols, heart-failure / diabetes management programmes, transplant pathways, stroke-care pathways — but most early-phase or single-encounter trials don't need one. <strong>Populate <code>care_path</code> only when the trial maps to a recognised standard pathway; otherwise omit it.</strong></p>
-
-        <p class="mt-2 text-sm text-slate-700"><b>FHIR alignment.</b> <code>CarePath</code> aligns with FHIR R5 <a href="https://hl7.org/fhir/plandefinition.html" class="underline" target="_blank" rel="noopener"><code>PlanDefinition</code></a> (a <em>template</em> of an ordered set of activities), not <code>CarePlan</code> (which is a patient-instantiated plan). Each <code>phase</code> aligns with a <code>PlanDefinition.action</code>.</p>
+        <p class="mt-2 text-sm text-slate-700">The export-level <code>care_path_catalog</code> stores stable English ids and labels, while aliases preserve source values and cross-language spellings from the upload. Each trial references one or more care paths via <code>care_path_ids</code>. TrialSchema v1 stores these normalized references; detailed pathway phases or actions can be modeled in extensions or future versions when needed. If no care path is known, omit <code>care_path_ids</code> or leave it empty; the matcher can still evaluate criteria without this first-pass filter.</p>
 
 <pre class="mt-3 bg-white border border-slate-200 rounded-xl p-4 text-[12.5px] overflow-x-auto"><span class="b">{</span>
-  <span class="k">"id"</span>:    <span class="s">"breast-cancer"</span>,
-  <span class="k">"label"</span>: <span class="s">"Breast cancer"</span>,
-  <span class="k">"concept"</span>: <span class="b">{</span> <span class="k">"system"</span>: <span class="s">"http://snomed.info/sct"</span>, <span class="k">"code"</span>: <span class="s">"254837009"</span> <span class="b">}</span>,
-  <span class="k">"phases"</span>: <span class="b">[</span>
-    <span class="b">{</span> <span class="k">"id"</span>: <span class="s">"phase-1"</span>, <span class="k">"label"</span>: <span class="s">"Diagnosis"</span>, <span class="k">"key_activities"</span>: <span class="b">[</span><span class="s">"Imaging"</span>, <span class="s">"Biopsy"</span><span class="b">]</span> <span class="b">}</span>,
-    <span class="b">{</span> <span class="k">"id"</span>: <span class="s">"phase-2"</span>, <span class="k">"label"</span>: <span class="s">"Neoadjuvant therapy"</span>, <span class="k">"key_activities"</span>: <span class="b">[</span><span class="s">"Chemotherapy"</span><span class="b">]</span> <span class="b">}</span>
-  <span class="b">]</span>
+  <span class="k">"care_path_catalog"</span>: <span class="b">[</span>
+    <span class="b">{</span>
+      <span class="k">"id"</span>: <span class="s">"breast_cancer"</span>,
+      <span class="k">"label"</span>: <span class="s">"Breast cancer"</span>,
+      <span class="k">"aliases"</span>: <span class="b">[</span><span class="s">"mammacarcinoom"</span>, <span class="s">"breast oncology"</span><span class="b">]</span>,
+      <span class="k">"concept"</span>: <span class="b">{</span> <span class="k">"system"</span>: <span class="s">"http://snomed.info/sct"</span>, <span class="k">"code"</span>: <span class="s">"254837009"</span> <span class="b">}</span>
+    <span class="b">}</span>
+  <span class="b">]</span>,
+  <span class="k">"trials"</span>: <span class="b">[</span><span class="b">{</span> <span class="k">"id"</span>: <span class="s">"NCT..."</span>, <span class="k">"kind"</span>: <span class="s">"trial"</span>, <span class="k">"enabled"</span>: <span class="b">true</span>, <span class="k">"care_path_ids"</span>: <span class="b">[</span><span class="s">"breast_cancer"</span><span class="b">]</span>, <span class="k">"criteria"</span>: <span class="b">[</span><span class="b">]</span> <span class="b">}</span><span class="b">]</span>
 <span class="b">}</span></pre>
       </section>
 
@@ -358,11 +359,14 @@
       <span class="b">{</span> <span class="k">"id"</span>: <span class="s">"other"</span>, <span class="k">"label"</span>: <span class="s">"Other / Soft criterion"</span>, <span class="k">"hint"</span>: <span class="s">"Consent, willingness, logistics"</span> <span class="b">}</span>
     <span class="b">]</span>
   <span class="b">}</span>,
+  <span class="k">"care_path_catalog"</span>: <span class="b">[</span>
+    <span class="b">{</span> <span class="k">"id"</span>: <span class="s">"breast_cancer"</span>, <span class="k">"label"</span>: <span class="s">"Breast cancer"</span>, <span class="k">"aliases"</span>: <span class="b">[</span><span class="s">"mammacarcinoom"</span><span class="b">]</span> <span class="b">}</span>
+  <span class="b">]</span>,
   <span class="k">"trials"</span>: <span class="b">[{</span>
     <span class="k">"id"</span>: <span class="s">"NCT04567890"</span>, <span class="k">"kind"</span>: <span class="s">"trial"</span>, <span class="k">"enabled"</span>: <span class="b">true</span>, <span class="k">"title"</span>: <span class="s">"PALOMA-3"</span>,
-    <span class="k">"phase"</span>: <span class="s">"phase-3"</span>,
     <span class="k">"conditions"</span>: <span class="b">[{</span> <span class="k">"system"</span>: <span class="s">"http://snomed.info/sct"</span>, <span class="k">"code"</span>: <span class="s">"254837009"</span>, <span class="k">"display"</span>: <span class="s">"Breast cancer"</span> <span class="b">}]</span>,
-    <span class="k">"lifecycle"</span>: <span class="b">{</span> <span class="k">"status"</span>: <span class="s">"recruiting"</span>, <span class="k">"start_date"</span>: <span class="s">"2013-10-07"</span> <span class="b">}</span>,
+    <span class="k">"lifecycle"</span>: <span class="b">{</span> <span class="k">"start_date"</span>: <span class="s">"2013-10-07"</span> <span class="b">}</span>,
+    <span class="k">"care_path_ids"</span>: <span class="b">[</span><span class="s">"breast_cancer"</span><span class="b">]</span>,
     <span class="k">"criteria"</span>: <span class="b">[</span>
       <span class="b">{</span>
         <span class="k">"id"</span>: <span class="s">"INC-01"</span>, <span class="k">"kind"</span>: <span class="s">"inclusion"</span>, <span class="k">"enabled"</span>: <span class="b">true</span>, <span class="k">"rank"</span>: <span class="n">1</span>,
@@ -396,15 +400,12 @@
             <tr><td><code>Trial</code></td><td><code>ResearchStudy</code></td><td>1:1 conceptually.</td></tr>
             <tr><td><code>id</code> / <code>identifiers</code></td><td><code>ResearchStudy.identifier</code></td><td>Primary id is the NCT number when present.</td></tr>
             <tr><td><code>title</code></td><td><code>ResearchStudy.title</code></td><td></td></tr>
-            <tr><td><code>phase</code></td><td><code>ResearchStudy.phase</code></td><td>Same vocabulary, kebab-cased.</td></tr>
             <tr><td><code>sponsor</code></td><td><code>ResearchStudy.associatedParty[role=sponsor]</code></td><td></td></tr>
             <tr><td><code>conditions</code></td><td><code>ResearchStudy.condition</code></td><td>Codings (SNOMED CT recommended).</td></tr>
             <tr><td><code>interventions</code></td><td><code>ResearchStudy.focus</code></td><td>With <code>type</code> annotation.</td></tr>
-            <tr><td><code>enrollment.target</code></td><td><code>ResearchStudy.recruitment.targetNumber</code></td><td></td></tr>
-            <tr><td><code>lifecycle.status</code></td><td><code>ResearchStudy.status</code></td><td>Same value set.</td></tr>
             <tr><td><code>lifecycle.start_date</code> / <code>completion_date</code></td><td><code>ResearchStudy.period</code></td><td>Date precision per <code>PartialDate</code>.</td></tr>
             <tr><td><code>criteria[]</code></td><td><code>ResearchStudy.recruitment.eligibility</code></td><td>v1 inlines criteria instead of referencing a <code>Group</code>.</td></tr>
-            <tr><td><code>care_path</code></td><td><code>PlanDefinition</code></td><td>Optional. <code>care_path.phases[]</code> ↔ <code>PlanDefinition.action[]</code>. Use when the trial maps to a recognised clinical pathway.</td></tr>
+            <tr><td><code>care_path_catalog</code> / <code>care_path_ids</code></td><td>TrialSchema addition</td><td>Normalized care-path references for first-pass matching; detailed phases can be added through extensions or future versions.</td></tr>
             <tr><td><code>Coding</code> / <code>Quantity</code> / <code>Identifier</code></td><td>FHIR <code>Coding</code> / <code>Quantity</code> / <code>Identifier</code></td><td>Field names and shape preserved.</td></tr>
           </tbody>
         </table>
@@ -429,7 +430,7 @@
 
         <p class="mt-3 text-sm text-slate-700 font-semibold">What happens automatically:</p>
         <ul class="mt-1 space-y-1 text-[13.5px] text-slate-700 list-disc pl-5">
-          <li>NCT id, title, phase, sponsor, conditions, interventions, enrollment, lifecycle dates and status are pulled <em>deterministically</em> from <code>protocolSection</code> — no LLM round-trip.</li>
+          <li>NCT id, title, sponsor, conditions, interventions, and matching-window lifecycle dates are pulled <em>deterministically</em> from <code>protocolSection</code> — no LLM round-trip.</li>
           <li>The free-text <code>eligibilityModule.eligibilityCriteria</code> blob is parsed into structured Inclusion / Exclusion criteria by the LLM, with best-effort LOINC / SNOMED / RxNorm code hints attached to each criterion's <code>concept</code>.</li>
           <li>Routing is set per criterion based on its concept domain.</li>
         </ul>
@@ -437,16 +438,11 @@
 <pre class="mt-4 bg-white border border-slate-200 rounded-xl p-4 text-[12.5px] overflow-x-auto"><span class="c">// CT.gov v2 → TrialSchema v1 (deterministic field map)</span>
 protocolSection.identificationModule.nctId            <span class="c">→</span>  trial.id
 protocolSection.identificationModule.briefTitle       <span class="c">→</span>  trial.title
-protocolSection.designModule.phases[]                 <span class="c">→</span>  trial.phase           <span class="c">// PHASE3 → "phase-3"</span>
 protocolSection.sponsorCollaboratorsModule.leadSponsor.name
                                                      <span class="c">→</span>  trial.sponsor.name
 protocolSection.conditionsModule.conditions[]         <span class="c">→</span>  trial.conditions[].text
 protocolSection.armsInterventionsModule.interventions <span class="c">→</span>  trial.interventions[]
-protocolSection.designModule.enrollmentInfo.count     <span class="c">→</span>  trial.enrollment.target
-protocolSection.statusModule.overallStatus            <span class="c">→</span>  trial.lifecycle.status
 protocolSection.statusModule.startDateStruct.date     <span class="c">→</span>  trial.lifecycle.start_date
-protocolSection.statusModule.primaryCompletionDateStruct.date
-                                                     <span class="c">→</span>  trial.lifecycle.primary_completion_date
 protocolSection.statusModule.completionDateStruct.date
                                                      <span class="c">→</span>  trial.lifecycle.completion_date
 protocolSection.eligibilityModule.eligibilityCriteria <span class="c">→</span>  trial.criteria[]      <span class="c">// LLM-structured</span></pre>
