@@ -132,6 +132,34 @@ assert.ok(
   compactApp.includes("Preserve quantitative operator strictness exactly"),
   "clarification prompt should preserve threshold strictness",
 );
+assert.ok(
+  compactApp.includes("https://graph.microsoft.com/beta/copilot/conversations"),
+  "app should support Microsoft 365 Copilot Chat API token mode",
+);
+assert.ok(
+  compactApp.includes("contextualResources: { webContext: { isWebEnabled: false } }"),
+  "Copilot token mode should disable web grounding for TrialSchema prompts",
+);
+assert.ok(
+  compactApp.includes("function buildCriterionClarifyPrompt"),
+  "clarification prompt should be reusable by API and manual copy flows",
+);
+assert.ok(
+  compactApp.includes("data-clarify-copy"),
+  "criterion rewrite panel should expose a manual prompt copy action",
+);
+assert.ok(
+  compactApp.includes("normalizeCriterionRewriteText"),
+  "manual criterion rewrite should accept pasted JSON responses",
+);
+assert.ok(
+  app.includes("bindCopilotTokenHelpModal"),
+  "app should expose Copilot token guidance for testing users",
+);
+assert.ok(
+  compactReadme.includes("Microsoft 365 Copilot Token Testing"),
+  "README should explain how to test Copilot token mode",
+);
 
 assert.ok(compactSchema.includes('"source_text"'), "schema should expose source_text");
 assert.ok(compactSchema.includes('"clarified_text"'), "schema should expose clarified_text");

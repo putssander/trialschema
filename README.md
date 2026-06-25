@@ -1,6 +1,6 @@
 # TrialSchema
 
-TrialSchema is a static, browser-only BYOK app for turning clinical-trial eligibility text into an agent-ready JSON export for patient matching. The app keeps the OpenAI API key in browser `localStorage`; there is no backend.
+TrialSchema is a static, browser-only BYOK app for turning clinical-trial eligibility text into an agent-ready JSON export for patient matching. The app keeps provider credentials (OpenAI key or Microsoft Graph access token) in browser `localStorage`; there is no backend.
 
 ## Schema Goal
 
@@ -27,7 +27,21 @@ Then open:
 http://127.0.0.1:5173
 ```
 
-Upload an Excel/CSV/JSON/JSONL source, load rows, and process trials with an OpenAI key. Without a key, the app supports manual copy/paste LLM mode per trial.
+Upload an Excel/CSV/JSON/JSONL source, load rows, and process trials with an OpenAI key or a Microsoft Graph access token for Microsoft 365 Copilot Chat API beta. Without a selected-provider credential, the app supports manual copy/paste LLM mode per trial and per criterion.
+
+For Copilot token mode, choose **Copilot token** in the header and paste a short-lived Microsoft Graph bearer token that has access to `https://graph.microsoft.com/beta/copilot/conversations`. The app does not attach OneDrive or SharePoint files; it sends the TrialSchema prompt text and requests JSON back.
+
+### Microsoft 365 Copilot Token Testing
+
+Token paste is intended for early testing only. Normal end users should eventually use a built-in **Sign in with Microsoft** flow, because Microsoft Graph access tokens are short-lived and awkward to obtain manually.
+
+For a test token:
+
+1. Open [Microsoft Graph Explorer](https://developer.microsoft.com/graph/graph-explorer) and sign in with the same work account that has Microsoft 365 Copilot API access.
+2. Switch to the `beta` endpoint, choose `POST`, and run `/copilot/conversations` with request body `{}`.
+3. If prompted, use **Modify permissions** or **Consent to permissions**. Tenant admin consent may be required for the Copilot Chat API delegated permission set.
+4. If Graph Explorer exposes an **Access token** panel/menu, copy the bearer token and paste it into TrialSchema's **Copilot token** field.
+5. If token copy is unavailable in your Graph Explorer experience, use Postman or move straight to MSAL sign-in; end users should not be asked to perform this manual token step.
 
 ## Matching-Oriented Criteria
 

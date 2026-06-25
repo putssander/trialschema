@@ -1,15 +1,15 @@
 /* =====================================================================
  * TrialSchema — app.js
  * 100% client-side BYOK pipeline. Transforms raw clinical trial rows
- * into the structured TrialSchema execution model via OpenAI.
+ * into the structured TrialSchema execution model via BYOK LLM providers.
  *
  * Sections:
  *   1.  Constants & state
- *   2.  API key handling (localStorage)
+ *   2.  LLM credential handling (localStorage)
  *   3.  /ingestion/ folder discovery + manual file uploads
  *   4.  Source parsers (TrialGPT, Org JSON, spreadsheet Excel/CSV via SheetJS)
  *   5.  Delta diffing (existing TrialSchema export merge)
- *   6.  OpenAI request (system prompt enforcing all extraction rules)
+ *   6.  LLM request (system prompt enforcing all extraction rules)
  *   7.  Throttled queue runner
  *   8.  Rendering: trials list & Clinical Review & Override Workspace
  *   9.  Export & utilities
@@ -186,7 +186,9 @@ function inferBestProfileDoc(criterion) {
 
 // Global app state ----------------------------------------------------------
 const state = {
+  llmProvider: "openai",
   apiKey: "",
+  copilotToken: "",
   model: "gpt-5.5",
   format: "trialgpt",
   throttleMs: 1500,
@@ -203,15 +205,80 @@ const state = {
   abort: false,
   carePathDetecting: false,
   carePaths: [],        // normalized clinical-domain enum [{id, label, aliases[]}]
+  selectedCarePathIds: [], // click-order selection used by the care-path merge flow
+  criteriaStep: "activate",
   routingProfile: cloneRoutingProfile(DEFAULT_ROUTING_PROFILE),
   selectedRoutingDocId: "",
 };
 
+const CRITERIA_STEPS = [
+  { id: "activate", label: "1 Activate", hint: "Decide which criteria stay active for matching. Inactive criteria are hidden from the next steps." },
+  { id: "clarify",  label: "2 Clarify",  hint: "Review wording and rewrite only active criteria that need it." },
+  { id: "documents", label: "3 Documents", hint: "Choose patient-document routes for active criteria." },
+  { id: "order",    label: "4 Order",    hint: "Reorder active criteria from quickest/cheapest to hardest." },
+];
 
-/* =========================== 2. API KEY HANDLING =========================== */
+function currentCriteriaStep() {
+  return CRITERIA_STEPS.some(s => s.id === state.criteriaStep) ? state.criteriaStep : CRITERIA_STEPS[0].id;
+}
 
+function criteriaStepHint(id = currentCriteriaStep()) {
+  return CRITERIA_STEPS.find(s => s.id === id)?.hint || "";
+}
+
+function criteriaStepButtonsHtml() {
+  const active = currentCriteriaStep();
+  return CRITERIA_STEPS.map(s => `
+    <button type="button" data-criteria-step="${s.id}" aria-pressed="${active === s.id ? "true" : "false"}"
+      class="rounded-lg px-2.5 py-1.5 text-[11px] font-semibold transition ${active === s.id ? "bg-slate-900 text-white shadow-sm" : "text-slate-500 hover:text-slate-800"}">
+      ${escapeHtml(s.label)}
+    </button>
+  `).join("");
+}
+
+function visibleCriteriaForStep(trial, step = currentCriteriaStep()) {
+  const criteria = trial?.criteria || [];
+  return step === "activate" ? criteria : criteria.filter(c => c.status !== "inactive");
+}
+
+
+/* ======================= 2. LLM CREDENTIAL HANDLING ======================= */
+
+const PROVIDER_STORAGE = "trialschema.llm.provider";
 const KEY_STORAGE = "trialschema.openai.key";
 const MODEL_STORAGE = "trialschema.openai.model";
+const COPILOT_TOKEN_STORAGE = "trialschema.copilot.graph_token";
+
+function normalizeProvider(value) {
+  return value === "copilot" ? "copilot" : "openai";
+}
+
+function hasLLMCredentials() {
+  return state.llmProvider === "copilot" ? !!state.copilotToken : !!state.apiKey;
+}
+
+function activeProviderName() {
+  return state.llmProvider === "copilot" ? "Microsoft 365 Copilot" : "OpenAI";
+}
+
+function activeModelLabel() {
+  return state.llmProvider === "copilot" ? "Microsoft 365 Copilot" : (state.model || "model");
+}
+
+function activeAIByline() {
+  return state.llmProvider === "copilot" ? "microsoft-365-copilot/beta" : `openai/${state.model || "unknown"}`;
+}
+
+function missingCredentialText() {
+  return state.llmProvider === "copilot"
+    ? "Paste a Microsoft Graph access token in the header first."
+    : "Save an OpenAI key in the header first.";
+}
+
+function normalizeCredentialInput(value) {
+  const v = String(value || "").trim();
+  return state.llmProvider === "copilot" ? v.replace(/^Bearer\s+/i, "").trim() : v;
+}
 
 // Fetch available GPT models from OpenAI and populate the dropdown.
 // Called after API key is saved/loaded. Falls back to a curated list if
@@ -228,6 +295,26 @@ async function loadModels() {
   const sel = document.getElementById("modelSelect");
   const status = document.getElementById("keyStatus");
   const savedModel = state.model;
+
+  if (state.llmProvider === "copilot") {
+    if (sel) {
+      sel.innerHTML = `<option value="copilot">Microsoft 365 Copilot</option>`;
+      sel.value = "copilot";
+      sel.disabled = true;
+      sel.classList.add("hidden");
+    }
+    if (status) {
+      status.textContent = state.copilotToken ? "Graph token saved" : "paste Graph token";
+      status.className = `text-[11px] ${state.copilotToken ? "text-emerald-600" : "text-slate-400"}`;
+    }
+    updateApiKeyDependentUi();
+    return;
+  }
+
+  if (sel) {
+    sel.disabled = false;
+    sel.classList.remove("hidden");
+  }
 
   // Filter to RECENT, chat-completion-capable models. Exclude non-chat or
   // legacy / specialty endpoints (mini/nano variants, image, audio, search,
@@ -311,12 +398,22 @@ async function loadModels() {
 }
 
 function loadApiKey() {
+  state.llmProvider = normalizeProvider(localStorage.getItem(PROVIDER_STORAGE));
   state.apiKey = localStorage.getItem(KEY_STORAGE) || "";
+  state.copilotToken = localStorage.getItem(COPILOT_TOKEN_STORAGE) || "";
   state.model = localStorage.getItem(MODEL_STORAGE) || "gpt-5.5";
+  const provider = document.getElementById("llmProviderSelect");
   const input = document.getElementById("apiKeyInput");
   const status = document.getElementById("keyStatus");
-  if (state.apiKey) {
-    input.value = state.apiKey;
+  if (provider) provider.value = state.llmProvider;
+  const value = state.llmProvider === "copilot" ? state.copilotToken : state.apiKey;
+  if (input) {
+    input.value = value;
+    input.placeholder = state.llmProvider === "copilot"
+      ? "Paste Microsoft Graph access token"
+      : "sk-... OpenAI API Key";
+  }
+  if (value && status) {
     status.textContent = "checking...";
     status.className = "text-[11px] text-slate-500";
   }
@@ -324,22 +421,46 @@ function loadApiKey() {
 }
 
 function saveApiKey() {
-  const v = document.getElementById("apiKeyInput").value.trim();
-  state.apiKey = v;
-  localStorage.setItem(KEY_STORAGE, v);
+  const input = document.getElementById("apiKeyInput");
+  const v = normalizeCredentialInput(input?.value || "");
+  if (input) input.value = v;
+  if (state.llmProvider === "copilot") {
+    state.copilotToken = v;
+    localStorage.setItem(COPILOT_TOKEN_STORAGE, v);
+  } else {
+    state.apiKey = v;
+    localStorage.setItem(KEY_STORAGE, v);
+  }
   const status = document.getElementById("keyStatus");
-  status.textContent = v ? "checking..." : "manual mode";
+  status.textContent = v ? (state.llmProvider === "copilot" ? "Graph token saved" : "checking...") : "manual mode";
   status.className = `text-[11px] ${v ? "text-slate-500" : "text-slate-400"}`;
   updateApiKeyDependentUi();
-  // Refresh model list now that we have (or lost) a key.
+  // Refresh model list now that we have (or lost) a credential.
+  loadModels();
+  trialItems.forEach((it, i) => renderRow(it, i));
+  updateProcessButtonLabel();
+}
+
+function setLLMProvider(provider) {
+  state.llmProvider = normalizeProvider(provider);
+  localStorage.setItem(PROVIDER_STORAGE, state.llmProvider);
+  const input = document.getElementById("apiKeyInput");
+  const saved = state.llmProvider === "copilot" ? state.copilotToken : state.apiKey;
+  if (input) {
+    input.value = saved || "";
+    input.placeholder = state.llmProvider === "copilot"
+      ? "Paste Microsoft Graph access token"
+      : "sk-... OpenAI API Key";
+  }
   loadModels();
   trialItems.forEach((it, i) => renderRow(it, i));
   updateProcessButtonLabel();
 }
 
 function updateApiKeyDependentUi() {
-  const hasKey = !!state.apiKey;
+  const hasKey = hasLLMCredentials();
   document.getElementById("manualModeHint")?.classList.toggle("hidden", hasKey);
+  document.getElementById("copilotTokenHelpBtn")?.classList.toggle("hidden", state.llmProvider !== "copilot");
 }
 
 
@@ -376,6 +497,11 @@ function showCtgovSourcePanel() {
   const toggle = document.getElementById("ctgovSourceToggle");
   if (panel) panel.classList.remove("hidden");
   if (toggle) toggle.classList.add("ring-2", "ring-cyan-200", "bg-cyan-50");
+}
+
+function updateSourceAuxiliaryUi() {
+  const reuse = document.getElementById("existingExportSection");
+  if (reuse) reuse.classList.toggle("hidden", !state.newFile);
 }
 
 const SPREADSHEET_REQUIRED_GROUPS = [
@@ -525,6 +651,7 @@ function bindManualUploads() {
     setCtgovRunHint("");
     state.newFile = f;
     document.getElementById("newFileName").textContent = `${f.name} (${formatBytes(f.size)})`;
+    updateSourceAuxiliaryUi();
     await previewAndDetectFormat(f);
     clearPreparedTrials();
   });
@@ -607,6 +734,7 @@ function bindManualUploads() {
         const file = new File([blob], filename, { type: "application/json" });
         state.newFile = file;
         document.getElementById("newFileName").textContent = `${file.name} (${formatBytes(file.size)})`;
+        updateSourceAuxiliaryUi();
         await previewAndDetectFormat(file);
         clearPreparedTrials("CT.gov source ready. Load trial rows to review before processing.");
         setStatus("ok", `Loaded ${ids.length} stud${ids.length === 1 ? "y" : "ies"} from ClinicalTrials.gov.`);
@@ -1243,11 +1371,29 @@ function buildCtgovPrompt(study) {
     "  - `healthy_volunteers === false` → do NOT add a separate criterion; this is implicit.",
   ].join("\n");
 }
+
+function formatPromptForManualLLM(systemPrompt, userPrompt) {
+  return `[SYSTEM]\n${systemPrompt}\n\n[USER]\n${userPrompt}`;
+}
+
+function parseModelJson(content, label = "Model") {
+  let text = String(content || "").trim();
+  text = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
+  try {
+    return JSON.parse(text || "{}");
+  } catch (directError) {
+    const start = text.indexOf("{");
+    const end = text.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      try { return JSON.parse(text.slice(start, end + 1)); } catch (_) {}
+    }
+    throw new Error(`${label} did not return valid JSON: ${directError.message}`);
+  }
+}
 // ----- /CT.gov v2 helpers ----------------------------------------------------
 
-async function callOpenAI(raw, signal) {
+async function callOpenAIJson({ system, user, signal }) {
   if (!state.apiKey) throw new Error("Missing OpenAI API key. Save it in the header.");
-  const systemPrompt = buildSystemPrompt();
   const body = {
     model: state.model,
     // dangerouslyAllowBrowser is an SDK-level flag; the raw fetch endpoint accepts
@@ -1256,8 +1402,8 @@ async function callOpenAI(raw, signal) {
     // (gpt-5.x and reasoning variants) only accept the default value.
     response_format: { type: "json_object" },
     messages: [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: buildUserPrompt(raw) },
+      { role: "system", content: system },
+      { role: "user", content: user },
     ],
   };
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -1276,9 +1422,80 @@ async function callOpenAI(raw, signal) {
   }
   const json = await res.json();
   const content = json.choices?.[0]?.message?.content || "{}";
-  let parsed;
-  try { parsed = JSON.parse(content); }
-  catch (e) { throw new Error("Model did not return valid JSON: " + e.message); }
+  return parseModelJson(content, "OpenAI");
+}
+
+function copilotTimeZone() {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+}
+
+function latestCopilotText(payload) {
+  const messages = Array.isArray(payload?.messages) ? payload.messages : [];
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const text = String(messages[i]?.text || "").trim();
+    if (text) return text;
+  }
+  return String(payload?.text || "").trim();
+}
+
+async function graphFetchJson(url, { method = "POST", body, signal } = {}) {
+  if (!state.copilotToken) throw new Error("Missing Microsoft Graph access token. Paste it in the header.");
+  const res = await fetch(url, {
+    method,
+    headers: {
+      "Authorization": `Bearer ${state.copilotToken}`,
+      "Content-Type": "application/json",
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+    signal,
+  });
+  if (!res.ok) {
+    const errTxt = await res.text().catch(() => "");
+    throw new Error(`Microsoft Graph HTTP ${res.status}: ${errTxt.slice(0, 320)}`);
+  }
+  return res.json();
+}
+
+async function callCopilotJson({ system, user, signal }) {
+  const conversation = await graphFetchJson("https://graph.microsoft.com/beta/copilot/conversations", {
+    body: {},
+    signal,
+  });
+  const conversationId = conversation?.id;
+  if (!conversationId) throw new Error("Microsoft Graph did not return a Copilot conversation id.");
+  const prompt = [
+    "You are being used inside TrialSchema. Follow the SYSTEM and USER sections exactly.",
+    "Return only strict JSON. Do not wrap the result in Markdown fences.",
+    "",
+    formatPromptForManualLLM(system, user),
+  ].join("\n");
+  const response = await graphFetchJson(
+    `https://graph.microsoft.com/beta/copilot/conversations/${encodeURIComponent(conversationId)}/chat`,
+    {
+      body: {
+        message: { text: prompt },
+        locationHint: { timeZone: copilotTimeZone() },
+        contextualResources: { webContext: { isWebEnabled: false } },
+      },
+      signal,
+    },
+  );
+  return parseModelJson(latestCopilotText(response), "Microsoft 365 Copilot");
+}
+
+async function callLLMJson({ system, user, signal }) {
+  return state.llmProvider === "copilot"
+    ? callCopilotJson({ system, user, signal })
+    : callOpenAIJson({ system, user, signal });
+}
+
+async function callLLMForTrial(raw, signal) {
+  if (!hasLLMCredentials()) throw new Error(missingCredentialText());
+  const parsed = await callLLMJson({
+    system: buildSystemPrompt(),
+    user: buildUserPrompt(raw),
+    signal,
+  });
   return sanitizeTrial(parsed);
 }
 
@@ -1385,6 +1602,50 @@ function refreshTrialProvenance(trial) {
     if (prov) prov.innerHTML = provenancePillsHtml(trial.edit_state);
   }
   updateEditedStat();
+}
+
+function renderTrialCardForTrial(trial) {
+  if (!trial || !Array.isArray(trialItems)) return;
+  const idx = trialItems.findIndex(it => it.result === trial);
+  if (idx >= 0) renderRow(trialItems[idx], idx);
+}
+
+function renumberCriteria(trial) {
+  (trial?.criteria || []).forEach((criterion, i) => { criterion.priority_level = i + 1; });
+}
+
+function applyVisibleCriteriaOrder(trial, orderedIds) {
+  const criteria = trial?.criteria || [];
+  const byId = Object.fromEntries(criteria.map(c => [c.criterion_id, c]));
+  const orderedSet = new Set(orderedIds);
+  const orderedVisible = orderedIds.map(id => byId[id]).filter(Boolean);
+  const hidden = criteria.filter(c => !orderedSet.has(c.criterion_id));
+  trial.criteria = [...orderedVisible, ...hidden];
+  renumberCriteria(trial);
+}
+
+function moveCriterion(trial, criterionId, delta, { activeOnly = false } = {}) {
+  if (!trial?.criteria?.length || !delta) return false;
+  if (activeOnly) {
+    const visible = visibleCriteriaForStep(trial, "order");
+    const from = visible.findIndex(c => c.criterion_id === criterionId);
+    const to = from + delta;
+    if (from < 0 || to < 0 || to >= visible.length) return false;
+    const orderedIds = visible.map(c => c.criterion_id);
+    const [moved] = orderedIds.splice(from, 1);
+    orderedIds.splice(to, 0, moved);
+    applyVisibleCriteriaOrder(trial, orderedIds);
+    markTrialEdited(trial);
+    return true;
+  }
+  const from = trial.criteria.findIndex(c => c.criterion_id === criterionId);
+  const to = from + delta;
+  if (from < 0 || to < 0 || to >= trial.criteria.length) return false;
+  const [moved] = trial.criteria.splice(from, 1);
+  trial.criteria.splice(to, 0, moved);
+  renumberCriteria(trial);
+  markTrialEdited(trial);
+  return true;
 }
 
 // Small inline pills shown in each trial row summarising who touched it.
@@ -1533,7 +1794,7 @@ async function prepareQueue() {
   renderCarePathsPanel();
 
   const manualBanner = document.getElementById("manualBanner");
-  if (!state.apiKey) {
+  if (!hasLLMCredentials()) {
     items.forEach((it, i) => {
       if (it.status === "pending") {
         it.status = "manual";
@@ -1542,7 +1803,7 @@ async function prepareQueue() {
     });
     if (manualBanner) manualBanner.classList.remove("hidden");
     updateStats(items);
-    setProgress(100, "Rows loaded. Manual mode — expand a trial to copy its prompt and paste back JSON.");
+    setProgress(100, "Rows loaded. Manual mode - expand a trial to copy its prompt and paste back JSON.");
   } else {
     if (manualBanner) manualBanner.classList.add("hidden");
     const nextStep = state.processMode === "all" ? "Run all pending trials when ready." : "Process one trial or switch to Batch.";
@@ -1555,12 +1816,12 @@ async function prepareQueue() {
 }
 
 async function ensureCarePathsDetected() {
-  if (!state.apiKey || !shouldDetectCarePaths()) return;
+  if (!hasLLMCredentials() || !shouldDetectCarePaths()) return;
   try { await detectCarePathsFromSample({ silent: true, fromPipeline: true }); } catch {}
 }
 
 function shouldDetectCarePaths() {
-  if (!state.apiKey || !(state.rawRows || []).length) return false;
+  if (!hasLLMCredentials() || !(state.rawRows || []).length) return false;
   if (!state.carePaths.length) return true;
   if (state.carePaths.some(cp => cp && cp._provisional)) return true;
   const sourceHints = carePathHintsFromRows(state.rawRows);
@@ -1585,7 +1846,7 @@ async function processTrialAtIndex(i, processed, total) {
   const rawCarePathIds = carePathIdsFromRaw(it.raw);
   it.status = "processing";
   it.error = "";
-  it.progressLabel = `Calling ${state.model || "model"} · 0s`;
+  it.progressLabel = `Calling ${activeModelLabel()} · 0s`;
   renderRow(it, i);
   focusTrialRow(i);
   const startPct = Math.round(processed / Math.max(1, total) * 100);
@@ -1606,7 +1867,7 @@ async function processTrialAtIndex(i, processed, total) {
     if (text) text.textContent = it.progressLabel;
   }, 1000);
   try {
-    const result = await callOpenAI(it.raw, state._abortController?.signal);
+    const result = await callLLMForTrial(it.raw, state._abortController?.signal);
     stopBusy();
     clearInterval(rowBusy);
     it.progressLabel = "Finalizing";
@@ -1618,7 +1879,7 @@ async function processTrialAtIndex(i, processed, total) {
     applySpreadsheetSourceFields(result, it.raw);
     if (!result.trial_id || result.trial_id === "string") result.trial_id = it.preview.id;
     if (typeof it.userEnabled === "boolean") result.enabled = it.userEnabled;
-    markTrialAI(result, `openai/${state.model}`);
+    markTrialAI(result, activeAIByline());
     it.result = result;
     it.status = "done";
     state.results[i] = result;
@@ -1669,7 +1930,7 @@ async function processTrialIndexes(indexes, labelMode = "batch") {
   }
 
   const manualBanner = document.getElementById("manualBanner");
-  if (!state.apiKey) {
+  if (!hasLLMCredentials()) {
     idxs.forEach(i => {
       trialItems[i].status = "manual";
       renderRow(trialItems[i], i);
@@ -1756,7 +2017,7 @@ function formatElapsed(ms) {
 
 function llmWaitStage(elapsedMs) {
   if (elapsedMs < 1500) return "Preparing request";
-  if (elapsedMs < 8000) return `Calling ${state.model || "model"}`;
+  if (elapsedMs < 8000) return `Calling ${activeModelLabel()}`;
   if (elapsedMs < 20000) return "Waiting for model response";
   if (elapsedMs < 45000) return "Still waiting for the model";
   return "Still working; large model calls can take a minute";
@@ -2277,7 +2538,7 @@ function updateRow(root, it) {
   }
   const oneBtn = root.querySelector("[data-process-one]");
   if (oneBtn) {
-    const canProcess = !!state.apiKey && !state.running && ["pending", "manual", "error"].includes(it.status);
+    const canProcess = hasLLMCredentials() && !state.running && ["pending", "manual", "error"].includes(it.status);
     oneBtn.classList.toggle("hidden", !canProcess);
     oneBtn.disabled = !canProcess;
     oneBtn.textContent = it.status === "error" ? "Retry" : "Process";
@@ -2310,13 +2571,13 @@ function rawCriteriaListHtml(text) {
 
 function renderBody(host, it, i) {
   const t = it.result;
-  const hasApiKey = !!state.apiKey;
-  // Per-trial manual prompt panel, shown only when no API key is available.
-  const manualPanel = hasApiKey ? "" : `
+  const hasLLM = hasLLMCredentials();
+  // Per-trial manual prompt panel, shown only when no selected provider credential is available.
+  const manualPanel = hasLLM ? "" : `
     <details class="mb-3 bg-white rounded-xl border border-slate-200 group">
       <summary class="px-4 py-2.5 flex items-center gap-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 rounded-xl">
         <svg viewBox="0 0 24 24" class="w-3.5 h-3.5 text-slate-400 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        No API key? Use any LLM manually
+        No provider token? Use any LLM manually
         <span class="ml-auto text-[11px] font-normal text-slate-400">copy prompt → paste JSON</span>
       </summary>
       <div class="px-4 pb-4 pt-1 space-y-2">
@@ -2345,7 +2606,7 @@ function renderBody(host, it, i) {
           <svg viewBox="0 0 24 24" class="w-4 h-4 text-amber-600 shrink-0 mt-0.5" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" stroke-linecap="round" stroke-linejoin="round"/></svg>
           <div>
             <p class="text-xs font-semibold text-amber-800">Raw source text — not yet agent-ready</p>
-            <p class="text-[11px] text-amber-700 mt-0.5">This is the unstructured criteria text from your file. ${hasApiKey ? "Process this trial" : "Process with an API key"} to split it into discrete, individually-routable criteria that matching agents can use.</p>
+            <p class="text-[11px] text-amber-700 mt-0.5">This is the unstructured criteria text from your file. ${hasLLM ? "Process this trial" : "Add a provider token"} to split it into discrete, individually-routable criteria that matching agents can use.</p>
           </div>
         </div>
         <div class="grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-slate-100">
@@ -2362,13 +2623,20 @@ function renderBody(host, it, i) {
     ` : "";
     host.innerHTML = manualPanel + rawPreview + (it.error
       ? `<div class="text-sm text-rose-700 bg-rose-50 border border-rose-200 rounded-xl p-3">${escapeHtml(it.error)}</div>`
-      : `<div class="text-sm text-slate-500 italic p-3">${hasApiKey ? "Not processed yet. Use Process on this trial or Process Next Trial to structure the criteria above." : "Not processed yet. Use the manual panel above, or save an API key and run the queue."}</div>`);
-    if (!hasApiKey) bindManualPanel(host, it, i);
+      : `<div class="text-sm text-slate-500 italic p-3">${hasLLM ? "Not processed yet. Use Process on this trial or Process Next Trial to structure the criteria above." : "Not processed yet. Use the manual panel above, or save a provider token and run the queue."}</div>`);
+    if (!hasLLM) bindManualPanel(host, it, i);
     return;
   }
 
   const m = t.metadata || {};
   const ld = m.lifecycle_dates || {};
+  const criteriaStep = currentCriteriaStep();
+  const allCriteria = t.criteria || [];
+  const activeCriteria = allCriteria.filter(c => c.status !== "inactive");
+  const visibleCriteria = visibleCriteriaForStep(t, criteriaStep);
+  const criteriaSummary = criteriaStep === "activate"
+    ? `${activeCriteria.length}/${allCriteria.length} active`
+    : `${visibleCriteria.length} active shown`;
   host.innerHTML = manualPanel + `
     <div class="grid grid-cols-1 gap-4 mt-3">
       <!-- Overview card (editable) -->
@@ -2409,22 +2677,37 @@ function renderBody(host, it, i) {
 
     <!-- Criteria workspace -->
     <div class="mt-4 bg-white rounded-2xl border border-slate-200 overflow-hidden">
-      <div class="flex items-center justify-between px-5 py-3 border-b border-slate-100">
+      <div class="flex flex-wrap items-start justify-between gap-3 px-5 py-3 border-b border-slate-100">
         <div>
           <h3 class="text-sm font-semibold text-slate-900">Criteria</h3>
-          <p class="text-[11px] text-slate-500">Numbered 1→N, easiest first. Drag the handle to fine-tune the run order.</p>
+          <p class="text-[11px] text-slate-500">${escapeHtml(criteriaStepHint())}</p>
         </div>
-        <div class="text-[11px] text-slate-500">${(t.criteria||[]).filter(c=>c.type==="inclusion").length} incl. · ${(t.criteria||[]).filter(c=>c.type==="exclusion").length} excl.</div>
+        <div class="flex flex-col items-start sm:items-end gap-2">
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-1 rounded-xl bg-slate-100 p-1" role="group" aria-label="Criteria review step">
+            ${criteriaStepButtonsHtml()}
+          </div>
+          <div class="text-[11px] text-slate-500">${criteriaSummary}</div>
+        </div>
       </div>
       <div class="px-3 py-3 space-y-2 bg-slate-50/40" data-criteria></div>
     </div>
   `;
 
   const critHost = host.querySelector("[data-criteria]");
-  (t.criteria || []).forEach((c, ci) => critHost.appendChild(buildCriterionRow(t, c, ci)));
-  enableCriterionDrag(critHost, t);
+  if (criteriaStep !== "activate" && !visibleCriteria.length) {
+    critHost.innerHTML = `<div class="rounded-xl border border-dashed border-slate-200 bg-white p-4 text-center text-xs text-slate-500">No active criteria in this step. Go back to <strong>1 Activate</strong> to re-enable criteria.</div>`;
+  } else {
+    visibleCriteria.forEach((c, ci) => critHost.appendChild(buildCriterionRow(t, c, ci, criteriaStep)));
+  }
+  if (criteriaStep === "order") enableCriterionDrag(critHost, t);
+  host.querySelectorAll("[data-criteria-step]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      state.criteriaStep = btn.dataset.criteriaStep;
+      renderBody(host, it, i);
+    });
+  });
   bindMetadataInputs(host, t);
-  if (!hasApiKey) bindManualPanel(host, it, i);
+  if (!hasLLM) bindManualPanel(host, it, i);
 }
 
 // Wire up live edits on the editable metadata card.
@@ -2504,7 +2787,7 @@ function bindCarePathEditor(host, trial) {
 // Wire up the per-trial manual copy/paste panel.
 function bindManualPanel(host, it, i) {
   const userPrompt = buildUserPrompt(it.raw);
-  const fullPrompt = `[SYSTEM]\n${buildSystemPrompt()}\n\n[USER]\n${userPrompt}`;
+  const fullPrompt = formatPromptForManualLLM(buildSystemPrompt(), userPrompt);
   const copyStatus = host.querySelector("[data-copy-status]");
   const flash = (msg) => {
     if (!copyStatus) return;
@@ -2512,8 +2795,8 @@ function bindManualPanel(host, it, i) {
     setTimeout(() => { copyStatus.textContent = ""; }, 1800);
   };
   const copyText = async (txt, label) => {
-    try { await navigator.clipboard.writeText(txt); flash(`${label} copied`); }
-    catch { flash("Copy failed — select & copy manually"); }
+    const copied = await copyToClipboard(txt);
+    flash(copied ? `${label} copied` : "Copy failed - select and copy manually");
   };
   host.querySelector('[data-act="copy-prompt"]')?.addEventListener("click", () => copyText(fullPrompt, "Prompt"));
 
@@ -2605,6 +2888,24 @@ function loadCarePaths() {
 function saveCarePaths() {
   try { localStorage.setItem(CAREPATHS_STORAGE, JSON.stringify(state.carePaths)); } catch {}
 }
+
+function selectedCarePathIds() {
+  const known = new Set((state.carePaths || []).map(cp => cp.id));
+  state.selectedCarePathIds = (state.selectedCarePathIds || []).filter(id => known.has(id));
+  return state.selectedCarePathIds.slice();
+}
+
+function setCarePathSelected(id, selected) {
+  const exists = (state.carePaths || []).some(cp => cp.id === id);
+  if (!exists) return;
+  const current = selectedCarePathIds().filter(x => x !== id);
+  state.selectedCarePathIds = selected ? [...current, id] : current;
+}
+
+function clearCarePathSelection() {
+  state.selectedCarePathIds = [];
+}
+
 function slugifyCarePath(label) {
   return String(label)
     .toLowerCase()
@@ -2721,7 +3022,7 @@ function upsertCarePathFromHint(value, { allowCreate = true, provisional = true 
 }
 
 function ensureCarePathsFromRawRows(rawRows) {
-  if (state.apiKey) return false;
+  if (hasLLMCredentials()) return false;
   const before = JSON.stringify(state.carePaths);
   carePathHintsFromRows(rawRows).forEach(hint => upsertCarePathFromHint(hint, { provisional: true }));
   if (JSON.stringify(state.carePaths) !== before) {
@@ -2735,14 +3036,14 @@ function carePathIdsFromRaw(row) {
   const rawValue = rawCarePathValue(row);
   if (!rawValue) return [];
   const ids = carePathHintsFromValue(rawValue)
-    .map(hint => upsertCarePathFromHint(hint, { allowCreate: !state.apiKey, provisional: !state.apiKey }))
+    .map(hint => upsertCarePathFromHint(hint, { allowCreate: !hasLLMCredentials(), provisional: !hasLLMCredentials() }))
     .filter(Boolean);
   if (ids.length) saveCarePaths();
   return normalizeCarePathIds(ids);
 }
 
 function ensureCarePathsFromTrial(trial) {
-  if (state.apiKey) return [];
+  if (hasLLMCredentials()) return [];
   if (!trial?.metadata?.conditions?.length) return [];
   const ids = trial.metadata.conditions.slice(0, 3).map(upsertCarePathFromHint).filter(Boolean);
   if (ids.length) saveCarePaths();
@@ -2806,6 +3107,48 @@ function reassignAllCarePaths() {
   return changed;
 }
 
+function mergeSelectedCarePaths() {
+  const ids = selectedCarePathIds();
+  if (ids.length < 2) return null;
+  const byId = Object.fromEntries((state.carePaths || []).map(cp => [cp.id, cp]));
+  const selected = ids.map(id => byId[id]).filter(Boolean);
+  if (selected.length < 2) return null;
+
+  const target = selected[0];
+  const mergedIds = new Set(selected.slice(1).map(cp => cp.id));
+  target.aliases = uniqueCarePathAliases([
+    ...(target.aliases || []),
+    ...selected.slice(1).flatMap(cp => [
+      cp.id,
+      cp.label,
+      ...(cp.aliases || []),
+    ]),
+  ]);
+  if (selected.some(cp => cp._normalized)) target._normalized = true;
+  if (selected.every(cp => cp._provisional) && !target._normalized) target._provisional = true;
+  else delete target._provisional;
+
+  state.carePaths = (state.carePaths || []).filter(cp => cp && !mergedIds.has(cp.id));
+  let updatedTrials = 0;
+  const seenTrials = new Set();
+  [
+    ...(state.results || []),
+    ...Object.values(state.resultsById || {}),
+  ].forEach(t => {
+    if (!t || seenTrials.has(t)) return;
+    seenTrials.add(t);
+    const current = Array.isArray(t.care_path_ids) ? t.care_path_ids : [];
+    const next = normalizeCarePathIds(current.map(id => mergedIds.has(id) ? target.id : id));
+    if (next.join("|") !== current.join("|")) {
+      t.care_path_ids = next;
+      updatedTrials++;
+    }
+  });
+  clearCarePathSelection();
+  saveCarePaths();
+  return { target, merged: selected.length - 1, updatedTrials };
+}
+
 function normalizeDetectedCarePath(cp) {
   if (!cp || typeof cp !== "object") return null;
   const id = slugifyCarePath(cp.id || cp.label || "");
@@ -2848,8 +3191,8 @@ async function detectCarePathsFromSample({ silent = false, fromPipeline = false 
   const statusEl = document.getElementById("carePathsStatus");
   const setStatus = (html) => { if (statusEl) statusEl.innerHTML = html; };
   if (state.carePathDetecting) return;
-  if (!state.apiKey) {
-    if (!silent) setStatus(`<span class="text-rose-600">Save an OpenAI key in the header to detect care paths.</span>`);
+  if (!hasLLMCredentials()) {
+    if (!silent) setStatus(`<span class="text-rose-600">${escapeHtml(missingCredentialText())}</span>`);
     return;
   }
   const sample = (state.rawRows || []).slice(0, 12);
@@ -2860,6 +3203,7 @@ async function detectCarePathsFromSample({ silent = false, fromPipeline = false 
   const sourceHints = carePathHintsFromRows(state.rawRows);
   const detectBtn = document.getElementById("detectCarePathsBtn");
   const addBtn = document.getElementById("addCarePathBtn");
+  const mergeBtn = document.getElementById("mergeCarePathsBtn");
   const reassignBtn = document.getElementById("reassignCarePathsBtn");
   const originalDetectHtml = detectBtn?.innerHTML || "";
   state.carePathDetecting = true;
@@ -2867,7 +3211,7 @@ async function detectCarePathsFromSample({ silent = false, fromPipeline = false 
     detectBtn.disabled = true;
     detectBtn.innerHTML = `<span class="ts-spinner h-3.5 w-3.5 rounded-full border-2 border-white/40 border-t-white"></span> Detecting...`;
   }
-  [addBtn, reassignBtn].forEach(btn => {
+  [addBtn, mergeBtn, reassignBtn].forEach(btn => {
     if (!btn) return;
     btn.disabled = true;
     btn.classList.add("opacity-50", "cursor-not-allowed");
@@ -2879,7 +3223,7 @@ async function detectCarePathsFromSample({ silent = false, fromPipeline = false 
     statusTitle: () => "Detecting care paths",
     detail: (elapsed) => {
       if (elapsed < 1200) return `Sampling ${sample.length} trial${sample.length === 1 ? "" : "s"}`;
-      if (elapsed < 8000) return `Calling ${state.model || "model"} with ${sourceHints.length || "no"} source hint${sourceHints.length === 1 ? "" : "s"}`;
+      if (elapsed < 8000) return `Calling ${activeModelLabel()} with ${sourceHints.length || "no"} source hint${sourceHints.length === 1 ? "" : "s"}`;
       if (elapsed < 20000) return "Waiting for normalized JSON";
       return "Still waiting; this can happen on larger models";
     },
@@ -2896,31 +3240,20 @@ async function detectCarePathsFromSample({ silent = false, fromPipeline = false 
     ? JSON.stringify(state.carePaths.map(cp => ({ id: cp.id, label: cp.label, aliases: cp.aliases || [] })), null, 2)
     : "[]";
   try {
-    const res = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${state.apiKey}`, "X-DangerouslyAllowBrowser": "true" },
-      body: JSON.stringify({
-        model: state.model,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: sys },
-          { role: "user",   content: [
-            "Original source care_path values. Preserve these as aliases; map their ids/labels to English:",
-            sourceHints.length ? sourceHints.map(v => `- ${v}`).join("\n") : "(none supplied)",
-            "",
-            "Current care_path catalog, if any. Normalize provisional/source-language entries into English ids and labels:",
-            currentCatalog,
-            "",
-            "Sample trials:",
-            condensed,
-          ].join("\n") },
-        ],
-      }),
+    const parsed = await callLLMJson({
+      system: sys,
+      user: [
+        "Original source care_path values. Preserve these as aliases; map their ids/labels to English:",
+        sourceHints.length ? sourceHints.map(v => `- ${v}`).join("\n") : "(none supplied)",
+        "",
+        "Current care_path catalog, if any. Normalize provisional/source-language entries into English ids and labels:",
+        currentCatalog,
+        "",
+        "Sample trials:",
+        condensed,
+      ].join("\n"),
       signal: state._abortController?.signal,
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const j = await res.json();
-    const parsed = JSON.parse(j.choices?.[0]?.message?.content || "{}");
     const list = Array.isArray(parsed.care_paths) ? parsed.care_paths : [];
     mergeDetectedCarePaths(list);
     saveCarePaths();
@@ -2950,6 +3283,8 @@ async function detectCarePathsFromSample({ silent = false, fromPipeline = false 
       btn.disabled = false;
       btn.classList.remove("opacity-50", "cursor-not-allowed");
     });
+    mergeBtn?.classList.remove("opacity-50", "cursor-not-allowed");
+    updateCarePathMergeControls();
   }
 }
 
@@ -2979,21 +3314,36 @@ function renderCarePathsPanel() {
   const section = document.getElementById("carePathsSection");
   if (!section) return;
   const hasAnyTrials = (state.rawRows || []).length > 0 || (state.results || []).length > 0;
-  if (!hasAnyTrials && !state.carePaths.length) { section.classList.add("hidden"); return; }
+  if (!hasAnyTrials && !state.carePaths.length) {
+    section.classList.add("hidden");
+    updateCarePathMergeControls();
+    return;
+  }
   section.classList.remove("hidden");
   const list = document.getElementById("carePathsList");
   if (!state.carePaths.length) {
     list.innerHTML = `<div class="col-span-full text-xs text-slate-500 italic p-3 border border-dashed border-slate-200 rounded-lg text-center">No care paths defined yet. Click <strong>Detect from sample</strong> to derive them with the LLM, or <strong>+ Add</strong> to create manually.</div>`;
+    updateCarePathMergeControls();
     return;
   }
   // Per-care-path count of currently-assigned trials.
   const counts = {};
   (state.results || []).forEach(t => (t?.care_path_ids || []).forEach(id => { counts[id] = (counts[id] || 0) + 1; }));
-  list.innerHTML = state.carePaths.map(cp => `
-    <div class="border border-slate-200 rounded-lg p-2.5 bg-slate-50/50" data-cp="${escapeHtml(cp.id)}">
-      <div class="flex items-center gap-2">
-        <input data-cp-label class="flex-1 text-sm font-semibold text-slate-900 bg-transparent border-b border-transparent hover:border-slate-200 focus:border-blue-400 focus:outline-none px-0 py-0.5" value="${escapeHtml(cp.label)}"/>
-        <span class="text-[10px] font-mono text-slate-400">${escapeHtml(cp.id)}</span>
+  const mergeSelection = selectedCarePathIds();
+	  list.innerHTML = state.carePaths.map(cp => {
+	    const selected = mergeSelection.includes(cp.id);
+	    const primary = mergeSelection.length > 1 && mergeSelection[0] === cp.id;
+	    return `
+	    <div class="border rounded-lg p-2.5 ${selected ? "border-blue-200 bg-blue-50/50" : "border-slate-200 bg-slate-50/50"}" data-cp="${escapeHtml(cp.id)}">
+	      <div class="flex flex-wrap items-center gap-2">
+        <label class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border cursor-pointer transition ${selected ? "border-blue-300 bg-blue-100" : "border-slate-200 bg-white hover:border-blue-200"}" title="Include this care path in the next merge">
+          <input data-cp-select type="checkbox" ${selected ? "checked" : ""}
+            aria-label="Include ${escapeHtml(cp.label)} in merge"
+            class="h-3.5 w-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500"/>
+        </label>
+	        <input data-cp-label class="flex-1 text-sm font-semibold text-slate-900 bg-transparent border-b border-transparent hover:border-slate-200 focus:border-blue-400 focus:outline-none px-0 py-0.5" value="${escapeHtml(cp.label)}"/>
+	        <span class="text-[10px] font-mono text-slate-400">${escapeHtml(cp.id)}</span>
+        ${primary ? `<span class="badge bg-emerald-50 text-emerald-700 border border-emerald-200">kept</span>` : ""}
         <span class="badge bg-blue-50 text-blue-700 border border-blue-200">${counts[cp.id] || 0}</span>
         <button data-cp-delete title="Delete care path" class="text-slate-400 hover:text-rose-600 text-sm leading-none px-1">×</button>
       </div>
@@ -3001,12 +3351,17 @@ function renderCarePathsPanel() {
         class="mt-1.5 w-full text-[11px] font-mono rounded border border-slate-200 bg-white focus:border-blue-400 focus:outline-none px-2 py-1"
         value="${escapeHtml((cp.aliases || []).join(", "))}"/>
     </div>
-  `).join("");
+  `;
+  }).join("");
 
   list.querySelectorAll("[data-cp]").forEach(card => {
     const id = card.dataset.cp;
     const cp = state.carePaths.find(c => c.id === id);
     if (!cp) return;
+    card.querySelector("[data-cp-select]").addEventListener("change", e => {
+      setCarePathSelected(id, e.target.checked);
+      renderCarePathsPanel();
+    });
     card.querySelector("[data-cp-label]").addEventListener("input", e => { cp.label = e.target.value; saveCarePaths(); });
     card.querySelector("[data-cp-aliases]").addEventListener("input", e => {
       cp.aliases = uniqueCarePathAliases(e.target.value.split(","));
@@ -3015,12 +3370,26 @@ function renderCarePathsPanel() {
     card.querySelector("[data-cp-delete]").addEventListener("click", () => {
       if (!confirm(`Delete care path "${cp.label}"? Trials currently assigned to it will become unassigned.`)) return;
       state.carePaths = state.carePaths.filter(c => c.id !== id);
+      setCarePathSelected(id, false);
       (state.results || []).forEach(t => { if (t && Array.isArray(t.care_path_ids)) t.care_path_ids = t.care_path_ids.filter(x => x !== id); });
       saveCarePaths();
       renderCarePathsPanel();
       trialItems.forEach((it, i) => { if (it.result) renderRow(it, i); });
     });
   });
+  updateCarePathMergeControls();
+}
+
+function updateCarePathMergeControls() {
+  const btn = document.getElementById("mergeCarePathsBtn");
+  if (!btn) return;
+  const ids = selectedCarePathIds();
+  const target = state.carePaths.find(cp => cp.id === ids[0]);
+  btn.disabled = ids.length < 2 || state.carePathDetecting;
+  btn.textContent = ids.length > 1 ? `Merge selected (${ids.length})` : "Merge selected";
+  btn.title = ids.length > 1 && target
+    ? `Merge ${ids.length - 1} selected care path(s) into "${target.label}".`
+    : "Select two or more care paths to merge.";
 }
 
 function bindCarePathControls() {
@@ -3032,6 +3401,25 @@ function bindCarePathControls() {
     state.carePaths.push({ id, label: label.trim(), aliases: [label.trim().toLowerCase()] });
     saveCarePaths();
     renderCarePathsPanel();
+  });
+  document.getElementById("mergeCarePathsBtn")?.addEventListener("click", () => {
+    const ids = selectedCarePathIds();
+    const selected = ids
+      .map(id => state.carePaths.find(cp => cp.id === id))
+      .filter(Boolean);
+    if (selected.length < 2) {
+      updateCarePathMergeControls();
+      return;
+    }
+    const target = selected[0];
+    const mergedLabels = selected.slice(1).map(cp => cp.label).join(", ");
+    if (!confirm(`Merge ${selected.length - 1} care path(s) into "${target.label}"?\n\nMerged away: ${mergedLabels}\n\nTrial assignments will be rewritten to the kept care path.`)) return;
+    const result = mergeSelectedCarePaths();
+    if (!result) return;
+    document.getElementById("carePathsStatus").innerHTML =
+      `<span class="text-emerald-700">Merged ${result.merged} care path(s) into "${escapeHtml(result.target.label)}". Updated ${result.updatedTrials} trial(s).</span>`;
+    renderCarePathsPanel();
+    trialItems.forEach((it, i) => { if (it.result) renderRow(it, i); });
   });
   document.getElementById("reassignCarePathsBtn")?.addEventListener("click", () => {
     const n = reassignAllCarePaths();
@@ -3057,40 +3445,22 @@ function detectStageRange(text) {
 }
 
 async function expandStagesForCriterion(criterion, stageMatch, host, trial) {
-  if (!state.apiKey) {
-    host.innerHTML = `<span class="text-[10px] text-rose-600">Save an OpenAI key in the header to expand stages.</span>`;
+  if (!hasLLMCredentials()) {
+    host.innerHTML = `<span class="text-[10px] text-rose-600">${escapeHtml(missingCredentialText())}</span>`;
     return;
   }
   host.innerHTML = `<span class="text-[10px] text-slate-500 italic">Expanding ${escapeHtml(stageMatch.system)} stages…</span>`;
   const sys = `You are a clinical staging expert. Given a free-text criterion that references a cancer staging range, enumerate every explicit stage in that range and provide its TNM-8 mapping when applicable. Return STRICT JSON: {"system":"FIGO|AJCC|TNM|Stage","values":[{"stage":"IB2","tnm":"T1b2 N0 M0"}, ...]}. No prose. If the text doesn't actually specify a stage range, return {"system":"","values":[]}.`;
   const usr = `Criterion text:\n${criterion.original_text}\n\nDetected staging system: ${stageMatch.system}\n\nEnumerate every individual stage in the range, inclusive. Use the condition context implied by the criterion to pick the correct TNM-8 mapping; if ambiguous, omit the tnm field.`;
   try {
-    const res = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${state.apiKey}`,
-        "X-DangerouslyAllowBrowser": "true",
-      },
-      body: JSON.stringify({
-        model: state.model,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: sys },
-          { role: "user",   content: usr },
-        ],
-      }),
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const j = await res.json();
-    const parsed = JSON.parse(j.choices?.[0]?.message?.content || "{}");
+    const parsed = await callLLMJson({ system: sys, user: usr });
     const values = Array.isArray(parsed.values) ? parsed.values.filter(v => v && v.stage) : [];
     if (!values.length) {
       host.innerHTML = `<span class="text-[10px] text-amber-700">No stages enumerated.</span>`;
       return;
     }
     criterion.stage_expansion = { system: parsed.system || stageMatch.system, values };
-    markTrialAI(trial, `openai/${state.model}`);
+    markTrialAI(trial, activeAIByline());
     host.innerHTML = `<span class="text-[10px] text-slate-500 font-semibold uppercase tracking-wider">${escapeHtml(parsed.system || stageMatch.system)}:</span>` +
       values.map(v => `<span class="badge bg-violet-50 text-violet-700 border border-violet-200">${escapeHtml(v.stage)}${v.tnm ? ` <span class="text-violet-400 font-normal">${escapeHtml(v.tnm)}</span>` : ""}</span>`).join("");
   } catch (e) {
@@ -3098,10 +3468,15 @@ async function expandStagesForCriterion(criterion, stageMatch, host, trial) {
   }
 }
 
-function buildCriterionRow(trial, c, ci) {
+function buildCriterionRow(trial, c, ci, mode = currentCriteriaStep()) {
+  const step = CRITERIA_STEPS.some(s => s.id === mode) ? mode : currentCriteriaStep();
+  const showClarify = step === "clarify";
+  const showDocs = step === "documents";
+  const showOrder = step === "order";
+  const showActivate = step === "activate";
   const card = document.createElement("div");
-  card.className = "criterion-card bg-white border border-slate-200 rounded-xl px-4 py-3 hover:border-blue-200 hover:shadow-sm transition";
-  card.draggable = true;
+  card.className = `criterion-card bg-white border border-slate-200 rounded-xl ${showClarify || showDocs ? "px-4 py-3" : "px-3 py-2"} hover:border-blue-200 hover:shadow-sm transition`;
+  card.draggable = showOrder;
   card.dataset.cid = c.criterion_id;
 
   const typeColor = c.type === "exclusion"
@@ -3129,41 +3504,33 @@ function buildCriterionRow(trial, c, ci) {
 
   // Render-time helpers ----------------------------------------------------
   const otherActiveNow = () => docRoutingState(c, "other") !== "off";
-
-  card.innerHTML = `
-    <!-- Header row: reorder/rank | criterion text | status -->
-    <div class="grid grid-cols-[auto_minmax(0,1fr)] lg:grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-3">
-      <div class="shrink-0 flex items-center gap-2">
-        <button type="button" data-handle title="Drag to reorder"
-          class="mt-1 text-slate-300 hover:text-slate-500 cursor-grab select-none">
+  const rankCell = showOrder
+    ? `<button type="button" data-handle title="Drag to reorder"
+          class="text-slate-300 hover:text-slate-500 cursor-grab select-none">
           <svg viewBox="0 0 24 24" class="w-4 h-4" fill="currentColor"><circle cx="9" cy="6" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="18" r="1.4"/></svg>
-        </button>
-        <span data-rank title="Run-order position (lower = run earlier)"
-          class="w-7 h-7 grid place-items-center rounded-full bg-slate-100 text-slate-700 text-[12px] font-bold">${ci+1}</span>
-      </div>
-
-      <div class="flex-1 min-w-0">
-        <div class="flex flex-wrap items-center gap-2 text-[11px]">
-          <span class="inline-flex items-center text-[10px] font-semibold rounded-md border ${typeColor} px-2 py-0.5">${escapeHtml(c.criterion_id)}</span>
-          <span class="text-slate-400 lowercase tracking-wide">${escapeHtml(categoryLabel)}</span>
-          ${evalPill}
-          ${codePill}
-        </div>
-        <div data-text class="mt-2 text-[13px] leading-relaxed text-slate-800">${escapeHtml(c.original_text)}</div>
-        <div data-original-line></div>
-        <div class="mt-2 flex flex-wrap items-center gap-2">
-          <button type="button" data-clarify-toggle title="Manually rewrite this criterion, or ask the LLM for an editable draft"
-            class="inline-flex items-center gap-1.5 text-[11px] font-semibold rounded-md border border-slate-200 bg-white text-slate-700 px-2.5 py-1.5 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700">
-            <svg viewBox="0 0 24 24" class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20l9-9-4-4-9 9-1 5 5-1z" stroke-linejoin="round"/></svg>
-            Clarify / rewrite
-          </button>
-        </div>
-      </div>
-
-      <button type="button" data-status-toggle
-        class="col-start-2 justify-self-start lg:col-start-auto lg:justify-self-auto shrink-0 text-[11px] font-semibold rounded-full px-3 py-1 border transition w-24 mt-0.5"></button>
+        </button>`
+    : "";
+  const orderControls = showOrder ? `
+    <div class="flex shrink-0 items-center gap-1">
+      <button type="button" data-order-move="-1" ${ci === 0 ? "disabled" : ""}
+        class="text-[10px] font-semibold rounded-md border border-slate-200 bg-white text-slate-600 px-2 py-1 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed">Up</button>
+      <button type="button" data-order-move="1" ${ci === (trial.criteria || []).length - 1 ? "disabled" : ""}
+        class="text-[10px] font-semibold rounded-md border border-slate-200 bg-white text-slate-600 px-2 py-1 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed">Down</button>
     </div>
-
+  ` : "";
+  const statusSummary = !showActivate && c.status === "inactive"
+    ? `<span class="inline-flex items-center text-[10px] font-semibold rounded-md bg-slate-100 text-slate-500 border border-slate-200 px-2 py-0.5">Inactive</span>`
+    : "";
+  const clarifyAction = showClarify ? `
+    <div class="mt-2 flex flex-wrap items-center gap-2">
+      <button type="button" data-clarify-toggle title="Manually rewrite this criterion, or ask the LLM for an editable draft"
+        class="inline-flex items-center gap-1.5 text-[11px] font-semibold rounded-md border border-slate-200 bg-white text-slate-700 px-2.5 py-1.5 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700">
+        <svg viewBox="0 0 24 24" class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20l9-9-4-4-9 9-1 5 5-1z" stroke-linejoin="round"/></svg>
+        Clarify / rewrite
+      </button>
+    </div>
+  ` : "";
+  const clarifyPanelHtml = showClarify ? `
     <!-- Rewrite panel: manual first, LLM as an editable draft assist -->
     <div data-clarify-panel class="hidden mt-3 rounded-lg border border-blue-200 bg-blue-50/60 p-3">
       <div class="flex items-start justify-between gap-3">
@@ -3190,6 +3557,8 @@ function buildCriterionRow(trial, c, ci) {
       <div class="mt-3 flex flex-wrap items-center justify-between gap-2">
         <span data-clarify-status class="text-[10.5px]"></span>
         <div class="flex flex-wrap items-center gap-2">
+          <button type="button" data-clarify-copy title="Copy the same prompt used by Draft with LLM"
+            class="text-[11px] font-semibold rounded-md bg-white text-slate-700 border border-slate-200 px-3 py-1.5 hover:bg-slate-50">Copy prompt</button>
           <button type="button" data-clarify-run
             class="text-[11px] font-semibold rounded-md bg-white text-blue-700 border border-blue-200 px-3 py-1.5 hover:bg-blue-50 disabled:opacity-50">Draft with LLM</button>
           <button type="button" data-clarify-apply
@@ -3197,12 +3566,13 @@ function buildCriterionRow(trial, c, ci) {
         </div>
       </div>
     </div>
-
+  ` : "";
+  const routingStrip = showDocs ? `
     <!-- Routing strip -->
     <div class="mt-3 pt-3 border-t border-slate-100">
-      <div class="flex items-center gap-2 mb-2">
+      <div class="flex flex-wrap items-center gap-2 mb-2">
         <span class="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Where to find this in patient docs</span>
-        <span class="text-[10px] text-slate-400">— click to cycle:
+        <span class="text-[10px] text-slate-400">click to cycle:
           <span class="inline-flex items-center gap-1 ml-1"><span class="inline-block w-2 h-2 rounded-full bg-blue-600"></span>primary</span>
           <span class="inline-flex items-center gap-1 ml-1"><span class="inline-block w-2 h-2 rounded-full bg-amber-300"></span>fallback</span>
           <span class="inline-flex items-center gap-1 ml-1"><span class="inline-block w-2 h-2 rounded-full bg-slate-200"></span>off</span>
@@ -3216,27 +3586,62 @@ function buildCriterionRow(trial, c, ci) {
         <datalist id="${guidanceListId}" data-guidance-list></datalist>
       </div>
     </div>
+  ` : "";
+
+  card.innerHTML = `
+    <!-- Header row: rank | criterion text | step-specific action -->
+    <div class="grid grid-cols-[auto_minmax(0,1fr)] lg:grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-3">
+      <div class="shrink-0 flex items-center gap-2">
+        ${rankCell}
+        <span data-rank title="Run-order position (lower = run earlier)"
+          class="w-7 h-7 grid place-items-center rounded-full bg-slate-100 text-slate-700 text-[12px] font-bold">${ci+1}</span>
+      </div>
+
+      <div class="flex-1 min-w-0">
+        <div class="flex flex-wrap items-center gap-2 text-[11px]">
+          <span class="inline-flex items-center text-[10px] font-semibold rounded-md border ${typeColor} px-2 py-0.5">${escapeHtml(c.criterion_id)}</span>
+          <span class="text-slate-400 lowercase tracking-wide">${escapeHtml(categoryLabel)}</span>
+          ${evalPill}
+          ${codePill}
+          ${statusSummary}
+        </div>
+        <div data-text class="mt-2 ${showClarify || showDocs ? "text-[13px] leading-relaxed" : "text-[12px] leading-snug criteria-compact-text"} text-slate-800">${escapeHtml(c.original_text)}</div>
+        <div data-original-line></div>
+        ${clarifyAction}
+      </div>
+
+      <div class="col-start-2 justify-self-start lg:col-start-auto lg:justify-self-auto flex shrink-0 items-center gap-2">
+        ${orderControls}
+        ${showActivate ? `<button type="button" data-status-toggle
+          class="shrink-0 text-[11px] font-semibold rounded-full px-3 py-1 border transition w-24 mt-0.5"></button>` : ""}
+      </div>
+    </div>
+
+    ${clarifyPanelHtml}
+    ${routingStrip}
   `;
 
   // ---------- Render the routing chips ----------
   const routingHost = card.querySelector("[data-routing]");
   const otherGuidance = card.querySelector("[data-other-guidance]");
-  matrixDocs().forEach(d => {
-    const chip = document.createElement("button");
-    chip.type = "button";
-    chip.dataset.doc = d.id;
-    routingHost.appendChild(chip);
-    renderMatrixCell(chip, c, d, () => {
-      markTrialEdited(trial);
-      if (d.id === "other") {
-        otherGuidance.classList.toggle("hidden", !otherActiveNow());
-        if (otherActiveNow()) {
-          refreshGuidanceSuggestions(card.querySelector("[data-guidance-list]"), c);
-          card.querySelector("[data-guidance]")?.focus();
+  if (routingHost) {
+    matrixDocs().forEach(d => {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.dataset.doc = d.id;
+      routingHost.appendChild(chip);
+      renderMatrixCell(chip, c, d, () => {
+        markTrialEdited(trial);
+        if (d.id === "other" && otherGuidance) {
+          otherGuidance.classList.toggle("hidden", !otherActiveNow());
+          if (otherActiveNow()) {
+            refreshGuidanceSuggestions(card.querySelector("[data-guidance-list]"), c);
+            card.querySelector("[data-guidance]")?.focus();
+          }
         }
-      }
+      });
     });
-  });
+  }
 
   // ---------- Inline original-text "was: ... revert" line ----------
   const textEl = card.querySelector("[data-text]");
@@ -3253,7 +3658,7 @@ function buildCriterionRow(trial, c, ci) {
     if (clarifyManual) clarifyManual.value = c.original_text;
   };
   const applyCriterionRewrite = (nextText, { aiDraft = false } = {}) => {
-    const next = String(nextText || "").trim();
+    const next = normalizeCriterionRewriteText(nextText);
     if (!next) {
       setClarifyStatus("Criterion text cannot be empty.", "text-[10.5px] text-rose-600");
       return false;
@@ -3268,13 +3673,14 @@ function buildCriterionRow(trial, c, ci) {
     syncCriterionText();
     refreshOriginalLine();
     markTrialEdited(trial);
-    if (aiDraft) markTrialAI(trial, `openai/${state.model}`);
+    if (aiDraft) markTrialAI(trial, activeAIByline());
     setClarifyStatus("Applied.", "text-[10.5px] text-emerald-600");
     return true;
   };
-  const refreshOriginalLine = () => {
-    originalLine.innerHTML = "";
-    if (c.original_text_raw && c.original_text_raw !== c.original_text) {
+	  const refreshOriginalLine = () => {
+	    originalLine.innerHTML = "";
+	    if (!showClarify) return;
+	    if (c.original_text_raw && c.original_text_raw !== c.original_text) {
       const div = document.createElement("div");
       div.className = "mt-1 text-[10px] text-slate-400 italic";
       div.innerHTML = `was: "${escapeHtml(c.original_text_raw)}" <button type="button" data-clarify-revert class="ml-1 text-blue-600 hover:underline not-italic font-semibold">revert</button>`;
@@ -3292,7 +3698,7 @@ function buildCriterionRow(trial, c, ci) {
 
   // ---------- Stage expansion (inline below criterion text) ----------
   const stageMatch = detectStageRange(c.original_text);
-  if (stageMatch) {
+  if (showClarify && stageMatch) {
     const stageBar = document.createElement("div");
     stageBar.className = "mt-2 flex flex-wrap items-center gap-1.5";
     const expanded = c.stage_expansion?.values || [];
@@ -3313,18 +3719,26 @@ function buildCriterionRow(trial, c, ci) {
   // ---------- Status toggle (active / inactive) ----------
   const statusBtn = card.querySelector("[data-status-toggle]");
   const paintStatus = () => {
+    if (!statusBtn) return;
     const cur = STATUS_CYCLE.find(s => s.id === c.status) || STATUS_CYCLE[0];
-    statusBtn.className = `col-start-2 justify-self-start lg:col-start-auto lg:justify-self-auto shrink-0 text-[11px] font-semibold rounded-full px-3 py-1 border transition w-24 mt-0.5 ${cur.cls}`;
+    statusBtn.className = `shrink-0 text-[11px] font-semibold rounded-full px-3 py-1 border transition w-24 mt-0.5 ${cur.cls}`;
     statusBtn.textContent = cur.label;
     statusBtn.title = `Click to ${c.status === "active" ? "deactivate" : "activate"} this criterion`;
     card.classList.toggle("opacity-60", c.status === "inactive");
   };
   paintStatus();
-  statusBtn.addEventListener("click", () => {
+  statusBtn?.addEventListener("click", () => {
     c.status = c.status === "active" ? "inactive" : "active";
     markTrialEdited(trial);
     paintStatus();
   });
+
+	  card.querySelectorAll("[data-order-move]").forEach(btn => {
+	    btn.addEventListener("click", () => {
+	      const moved = moveCriterion(trial, c.criterion_id, Number(btn.dataset.orderMove || 0), { activeOnly: true });
+	      if (moved) renderTrialCardForTrial(trial);
+	    });
+	  });
 
   // ---------- Guidance textarea ----------
   const guidance = card.querySelector("[data-guidance]");
@@ -3344,6 +3758,7 @@ function buildCriterionRow(trial, c, ci) {
   const clarifyInput  = card.querySelector("[data-clarify-input]");
   const clarifyApply  = card.querySelector("[data-clarify-apply]");
   const clarifyRun    = card.querySelector("[data-clarify-run]");
+  const clarifyCopy   = card.querySelector("[data-clarify-copy]");
   const clarifyCancel = card.querySelector("[data-clarify-cancel]");
   let clarifyDraftText = "";
   let clarifyDraftIsAI = false;
@@ -3375,9 +3790,18 @@ function buildCriterionRow(trial, c, ci) {
       setTimeout(() => { clarifyPanel.classList.add("hidden"); setClarifyStatus(""); }, 700);
     }
   });
+  clarifyCopy?.addEventListener("click", async () => {
+    const userHint = (clarifyInput?.value || "").trim();
+    const prompt = buildCriterionClarifyPrompt(trial, c, userHint);
+    const copied = await copyToClipboard(prompt.manual);
+    setClarifyStatus(
+      copied ? "Prompt copied. Paste returned JSON above and apply." : "Copy failed - select and copy manually.",
+      copied ? "text-[10.5px] text-emerald-600" : "text-[10.5px] text-rose-600",
+    );
+  });
   clarifyRun?.addEventListener("click", async () => {
-    if (!state.apiKey) {
-      setClarifyStatus("Save an OpenAI key first.", "text-[10.5px] text-rose-600");
+    if (!hasLLMCredentials()) {
+      setClarifyStatus(missingCredentialText(), "text-[10.5px] text-rose-600");
       return;
     }
     const userHint = (clarifyInput?.value || "").trim();
@@ -3406,8 +3830,8 @@ function buildCriterionRow(trial, c, ci) {
 // Call the LLM to rewrite a single criterion so it is unambiguous and
 // self-contained. The prompt teaches the model to bake in the background
 // knowledge a downstream matcher would otherwise need to invent.
-async function clarifyCriterionWithLLM(trial, criterion, userHint) {
-  const sys = `You rewrite a SINGLE clinical-trial eligibility criterion so it is fully explicit, unambiguous, self-contained, and faithful to the TrialSchema constraint used by a downstream patient-matching agent.
+function buildCriterionClarifyPrompt(trial, criterion, userHint) {
+  const system = `You rewrite a SINGLE clinical-trial eligibility criterion so it is fully explicit, unambiguous, self-contained, and faithful to the TrialSchema constraint used by a downstream patient-matching agent.
 
 Rules:
 - Preserve the original meaning exactly. NEVER make the criterion more or less restrictive.
@@ -3423,7 +3847,7 @@ Return STRICT JSON: {"rewritten":"...string..."}. No prose.`;
   const structured = criterion.evaluation_type === "quantitative" && criterion.structured_target
     ? JSON.stringify(criterion.structured_target)
     : "";
-  const ctx = [
+  const user = [
     m.brief_title ? `Trial title: ${m.brief_title}` : "",
     m.conditions?.length ? `Conditions: ${m.conditions.join(", ")}` : "",
     `Criterion type: ${criterion.type}`,
@@ -3433,25 +3857,27 @@ Return STRICT JSON: {"rewritten":"...string..."}. No prose.`;
     structured ? `Structured target to preserve: ${structured}` : "",
     userHint ? `\nUser guidance (apply this when rewriting): ${userHint}` : "",
   ].filter(Boolean).join("\n");
-  const res = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${state.apiKey}`,
-      "X-DangerouslyAllowBrowser": "true",
-    },
-    body: JSON.stringify({
-      model: state.model,
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: sys },
-        { role: "user",   content: ctx },
-      ],
-    }),
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const j = await res.json();
-  const parsed = JSON.parse(j.choices?.[0]?.message?.content || "{}");
+  return { system, user, manual: formatPromptForManualLLM(system, user) };
+}
+
+function normalizeCriterionRewriteText(input) {
+  let text = String(input || "").trim();
+  text = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
+  if (text.startsWith("{") || text.startsWith("\"")) {
+    try {
+      const parsed = JSON.parse(text);
+      if (typeof parsed === "string") return parsed.trim();
+      if (parsed && typeof parsed.rewritten === "string") return parsed.rewritten.trim();
+    } catch (_) {
+      // Keep the pasted text as-is when it is not parseable JSON.
+    }
+  }
+  return text;
+}
+
+async function clarifyCriterionWithLLM(trial, criterion, userHint) {
+  const prompt = buildCriterionClarifyPrompt(trial, criterion, userHint);
+  const parsed = await callLLMJson({ system: prompt.system, user: prompt.user });
   return String(parsed.rewritten || "").trim();
 }
 
@@ -3523,10 +3949,7 @@ function enableCriterionDrag(host, trial) {
     card.addEventListener("drop", (e) => {
       e.preventDefault();
       const order = cards().map(r => r.dataset.cid);
-      trial.criteria.sort((a, b) => order.indexOf(a.criterion_id) - order.indexOf(b.criterion_id));
-      // Re-number both the data model and the visible rank badges so the
-      // ranking is purely positional (1..N) after every drop.
-      trial.criteria.forEach((c, i) => { c.priority_level = i + 1; });
+      applyVisibleCriteriaOrder(trial, order);
       markTrialEdited(trial);
       repaintRanks();
     });
@@ -3535,6 +3958,35 @@ function enableCriterionDrag(host, trial) {
 
 function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+async function copyToClipboard(text) {
+  const txt = String(text ?? "");
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(txt);
+      return true;
+    } catch (_) {
+      // Fall through to the legacy selection path.
+    }
+  }
+  const ta = document.createElement("textarea");
+  ta.value = txt;
+  ta.setAttribute("readonly", "");
+  ta.style.position = "fixed";
+  ta.style.top = "-1000px";
+  ta.style.left = "-1000px";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  try {
+    return document.execCommand("copy");
+  } catch (_) {
+    return false;
+  } finally {
+    document.body.removeChild(ta);
+  }
 }
 
 
@@ -3750,7 +4202,7 @@ function tsv1Criterion(c, idx) {
     guidance: typeof c.guidance === "string" ? c.guidance : "",
     provenance: {
       extracted_at: new Date().toISOString(),
-      extracted_by: `openai/${state.model || "unknown"}`,
+      extracted_by: activeAIByline(),
     },
   };
 }
@@ -3975,14 +4427,19 @@ document.addEventListener("DOMContentLoaded", () => {
   bindManualUploads();
   bindFilters();
   bindSourceInfoModal();
+  bindCopilotTokenHelpModal();
   bindRoutingProfileControls();
   bindCarePathControls();
   renderRoutingProfileEditor();
   renderCarePathsPanel();
+  updateSourceAuxiliaryUi();
 
   document.getElementById("saveKeyBtn").addEventListener("click", saveApiKey);
   document.getElementById("apiKeyInput").addEventListener("keydown", (e) => {
     if (e.key === "Enter") saveApiKey();
+  });
+  document.getElementById("llmProviderSelect")?.addEventListener("change", (e) => {
+    setLLMProvider(e.target.value);
   });
   document.getElementById("modelSelect").addEventListener("change", (e) => {
     state.model = e.target.value;
@@ -4039,6 +4496,7 @@ async function loadDemoCorpus() {
     const file = new File([text], "corpus-sigir-snippet.jsonl", { type: "application/x-ndjson" });
     state.newFile = file;
     document.getElementById("newFileName").textContent = `${file.name} (${formatBytes(file.size)}) · sample`;
+    updateSourceAuxiliaryUi();
     await previewAndDetectFormat(file);
     clearPreparedTrials("Sample source ready. Load trial rows to review before processing.");
   } catch (e) {
@@ -4056,5 +4514,15 @@ function bindSourceInfoModal() {
   if (!open || !modal) return;
   open.addEventListener("click", () => modal.classList.remove("hidden"));
   close.addEventListener("click", () => modal.classList.add("hidden"));
+  modal.addEventListener("click", (e) => { if (e.target === modal) modal.classList.add("hidden"); });
+}
+
+function bindCopilotTokenHelpModal() {
+  const open  = document.getElementById("copilotTokenHelpBtn");
+  const modal = document.getElementById("copilotTokenHelpModal");
+  const close = document.getElementById("copilotTokenHelpClose");
+  if (!open || !modal) return;
+  open.addEventListener("click", () => modal.classList.remove("hidden"));
+  close?.addEventListener("click", () => modal.classList.add("hidden"));
   modal.addEventListener("click", (e) => { if (e.target === modal) modal.classList.add("hidden"); });
 }

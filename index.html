@@ -44,6 +44,7 @@
     .meta-input { width:100%; background:transparent; border:1px solid transparent; border-radius:.375rem; padding:.2rem .4rem; font-size:12px; color:#0f172a; }
     .meta-input:hover { border-color:#e2e8f0; background:#f8fafc; }
     .meta-input:focus { outline:none; border-color:var(--ts-teal); background:#fff; box-shadow:0 0 0 2px rgb(0 166 180 / .15); }
+    .criteria-compact-text { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
     details > summary { list-style: none; cursor: pointer; }
     details > summary::-webkit-details-marker { display: none; }
     details[open] > summary .details-chevron { transform: rotate(180deg); }
@@ -125,11 +126,19 @@
           <svg viewBox="0 0 24 24" class="w-4 h-4 text-slate-500" fill="none">
             <path d="M12 2l3 7h7l-5.5 4 2 7L12 16l-6.5 4 2-7L2 9h7l3-7z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
           </svg>
+          <select id="llmProviderSelect" class="bg-white text-xs border border-slate-200 rounded-lg px-2 py-1.5 ring-focus">
+            <option value="openai">OpenAI</option>
+            <option value="copilot">Copilot token</option>
+          </select>
           <input id="apiKeyInput" type="password" autocomplete="off" placeholder="sk-... OpenAI API Key"
             class="bg-transparent text-sm w-72 ring-focus" />
           <button id="saveKeyBtn"
             class="text-xs font-semibold px-2.5 py-1 rounded-lg bg-slate-900 text-white hover:bg-slate-700">Save</button>
           <span id="keyStatus" class="text-[11px] text-slate-500"></span>
+          <button id="copilotTokenHelpBtn" type="button"
+            class="hidden text-[11px] font-semibold text-slate-500 hover:text-slate-900 underline decoration-slate-300 underline-offset-2">
+            token help
+          </button>
         </div>
         <select id="modelSelect" class="text-sm bg-white border border-slate-200 rounded-xl px-3 py-2 ring-focus">
           <option value="" disabled>Loading models...</option>
@@ -153,24 +162,6 @@
           </button>
         </div>
         <p class="mt-0.5 text-[11px] text-slate-500">Choose trial rows, then optionally reuse edits from an earlier export.</p>
-        <div id="workflowGuide" class="mt-3 grid grid-cols-4 gap-1.5 text-[10px]">
-          <div data-workflow-step="source" class="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5">
-            <div class="font-bold text-slate-700">1 Source</div>
-            <div data-workflow-label class="mt-0.5 text-slate-400 truncate">choose source</div>
-          </div>
-          <div data-workflow-step="setup" class="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5">
-            <div class="font-bold text-slate-700">2 Setup</div>
-            <div data-workflow-label class="mt-0.5 text-slate-400 truncate">optional</div>
-          </div>
-          <div data-workflow-step="rows" class="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5">
-            <div class="font-bold text-slate-700">3 Rows</div>
-            <div data-workflow-label class="mt-0.5 text-slate-400 truncate">load</div>
-          </div>
-          <div data-workflow-step="process" class="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5">
-            <div class="font-bold text-slate-700">4 Process</div>
-            <div data-workflow-label class="mt-0.5 text-slate-400 truncate">trial</div>
-          </div>
-        </div>
 
         <!-- Source: upload a fresh source file or use the bundled sample -->
         <div class="mt-3">
@@ -178,22 +169,41 @@
             <svg viewBox="0 0 24 24" class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 16V4M6 10l6-6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>
             Trial source
           </div>
-          <div class="mt-1.5 grid grid-cols-3 gap-2">
-            <label class="brand-dropzone-navy flex flex-col items-center justify-center gap-1 border-2 border-dashed border-slate-300 rounded-xl px-3 py-4 cursor-pointer text-center transition min-h-[92px]">
-              <span id="newFileName" class="text-xs font-semibold text-slate-700 truncate max-w-full">Upload file</span>
-              <span class="text-[10px] text-slate-400">xlsx/csv/json</span>
+          <div class="mt-1.5 space-y-2">
+            <label class="brand-dropzone-navy flex items-center gap-3 border-2 border-dashed border-slate-300 rounded-xl px-4 py-5 cursor-pointer transition min-h-[124px] bg-white">
+              <span class="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-slate-900 text-white">
+                <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M12 16V4M6 10l6-6 6 6M5 20h14" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </span>
+              <span class="min-w-0 flex-1">
+                <span class="block text-sm font-bold text-slate-900">Upload trial source</span>
+                <span id="newFileName" class="mt-1 block text-xs font-semibold text-slate-700 truncate">Choose an Excel, CSV, JSON, or JSONL file</span>
+                <span class="mt-1 block text-[10px] text-slate-400">Primary path for importing trials</span>
+              </span>
               <input id="newFileInput" type="file" accept=".json,.jsonl,.xlsx,.xls,.csv" class="hidden"/>
             </label>
-            <button id="loadDemoBtn" type="button" class="min-h-[92px] inline-flex flex-col items-center justify-center gap-1 text-xs font-semibold text-slate-700 bg-slate-50 border border-slate-200 rounded-xl px-3 py-4 hover:bg-slate-100">
-              <svg viewBox="0 0 24 24" class="w-4 h-4 text-slate-500" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 3v18l7-4 7 4V3z"/></svg>
-              Try example
-              <span class="text-[10px] font-normal text-slate-400">sample trials</span>
-            </button>
-            <button id="ctgovSourceToggle" type="button" class="min-h-[92px] inline-flex flex-col items-center justify-center gap-1 text-xs font-semibold text-slate-700 bg-white border border-slate-200 rounded-xl px-3 py-4 hover:bg-slate-50">
-              <svg viewBox="0 0 24 24" class="w-4 h-4 text-slate-500" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 21l-4.3-4.3M11 19a8 8 0 1 1 0-16 8 8 0 0 1 0 16z" stroke-linecap="round"/></svg>
-              Fetch CT.gov
-              <span class="text-[10px] font-normal text-slate-400">NCT id</span>
-            </button>
+            <div id="existingExportSection" class="hidden rounded-xl border border-slate-100 bg-slate-50/70 px-3 py-2.5">
+              <div class="brand-resume-label flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider">
+                <svg viewBox="0 0 24 24" class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h12l4 4v12H4z M9 13h6M9 17h6" stroke-linecap="round"/></svg>
+                Reuse previous edits
+              </div>
+              <p class="mt-1 text-[10px] text-slate-500 leading-snug">Optional: load an old export to reuse reviewed trials with matching IDs.</p>
+              <label class="brand-dropzone-teal mt-1.5 flex items-center gap-2 border-2 border-dashed border-slate-300 rounded-lg px-3 py-2 cursor-pointer transition bg-white">
+                <svg viewBox="0 0 24 24" class="w-4 h-4 text-slate-500 shrink-0" fill="none"><path d="M4 4h12l4 4v12H4z" stroke="currentColor" stroke-width="1.6"/></svg>
+                <span id="existingFileName" class="text-[11px] text-slate-600 truncate flex-1">trialschema_export.json</span>
+                <input id="existingFileInput" type="file" accept=".json" class="hidden"/>
+              </label>
+              <div id="existingStats" class="mt-1.5 text-[10px] text-slate-500"></div>
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+              <button id="loadDemoBtn" type="button" class="inline-flex items-center justify-center gap-1.5 text-[11px] font-semibold text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 hover:bg-slate-100">
+                <svg viewBox="0 0 24 24" class="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 3v18l7-4 7 4V3z"/></svg>
+                Try example
+              </button>
+              <button id="ctgovSourceToggle" type="button" class="inline-flex items-center justify-center gap-1.5 text-[11px] font-semibold text-slate-600 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 hover:bg-slate-50">
+                <svg viewBox="0 0 24 24" class="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 21l-4.3-4.3M11 19a8 8 0 1 1 0-16 8 8 0 0 1 0 16z" stroke-linecap="round"/></svg>
+                Fetch CT.gov
+              </button>
+            </div>
           </div>
           <div id="ctgovSourcePanel" class="hidden mt-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 space-y-2">
             <p class="text-[10.5px] text-slate-500 leading-snug">Paste one or more NCT ids. We'll pull the public CT.gov v2 record and stage it as the trial source.</p>
@@ -219,21 +229,6 @@
           <div id="formatBanner" class="hidden mt-2 text-[11px] rounded-lg px-2.5 py-1.5"></div>
         </div>
 
-        <!-- Optional: reuse reviewed work from a previous TrialSchema export -->
-        <div class="mt-3 pt-3 border-t border-slate-100">
-          <div class="brand-resume-label flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider">
-            <svg viewBox="0 0 24 24" class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h12l4 4v12H4z M9 13h6M9 17h6" stroke-linecap="round"/></svg>
-            Reuse previous edits
-          </div>
-          <p class="mt-1 text-[10px] text-slate-500 leading-snug">Optional: load an old export to continue it alone, or merge its reviewed trials when a new upload has matching IDs.</p>
-          <label class="brand-dropzone-teal mt-1.5 flex items-center gap-2 border-2 border-dashed border-slate-300 rounded-xl px-3 py-2.5 cursor-pointer transition">
-            <svg viewBox="0 0 24 24" class="w-4 h-4 text-slate-500 shrink-0" fill="none"><path d="M4 4h12l4 4v12H4z" stroke="currentColor" stroke-width="1.6"/></svg>
-            <span id="existingFileName" class="text-[11px] text-slate-600 truncate flex-1">trialschema_export.json</span>
-            <input id="existingFileInput" type="file" accept=".json" class="hidden"/>
-          </label>
-          <div id="existingStats" class="mt-1.5 text-[10px] text-slate-500"></div>
-        </div>
-
         <!-- Then: run / stop -->
         <div class="mt-4 pt-3 border-t border-slate-100">
           <div class="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1.5">Then</div>
@@ -250,7 +245,7 @@
             <svg viewBox="0 0 24 24" class="w-4 h-4" fill="none"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>
             Stop
           </button>
-          <p id="manualModeHint" class="mt-2 text-[10px] text-slate-400 leading-snug">No API key? Each trial has <strong>Copy prompt</strong> / <strong>Paste JSON</strong> — use any LLM.</p>
+          <p id="manualModeHint" class="mt-2 text-[10px] text-slate-400 leading-snug">No provider credential? Each trial has <strong>Copy prompt</strong> / <strong>Paste JSON</strong> - use any LLM.</p>
         </div>
       </section>
 
@@ -301,6 +296,34 @@
           <button data-tpl="csv" class="tpl-btn text-xs font-semibold rounded-lg bg-white border border-slate-200 text-slate-700 px-3 py-1.5 hover:bg-slate-50">CSV</button>
           <button data-tpl="jsonl" class="tpl-btn text-xs font-semibold rounded-lg bg-white border border-slate-200 text-slate-700 px-3 py-1.5 hover:bg-slate-50">JSONL</button>
         </div>
+      </div>
+    </div>
+
+    <!-- Copilot token help -->
+    <div id="copilotTokenHelpModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 px-4">
+      <div class="bg-white rounded-2xl shadow-xl max-w-lg w-full p-5">
+        <div class="flex items-start gap-2">
+          <h3 class="text-sm font-bold text-slate-900">Microsoft 365 Copilot token mode</h3>
+          <button id="copilotTokenHelpClose" class="ml-auto text-slate-400 hover:text-slate-700" aria-label="Close">
+            <svg viewBox="0 0 24 24" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18" stroke-linecap="round"/></svg>
+          </button>
+        </div>
+        <p class="mt-2 text-xs text-slate-600 leading-relaxed">
+          Token paste is a temporary testing path. A Microsoft Graph access token is short-lived and belongs to the signed-in work account. For normal end users, use a future <strong>Sign in with Microsoft</strong> flow instead of asking them to copy tokens.
+        </p>
+        <div class="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 leading-relaxed">
+          Only paste a token on trusted TrialSchema pages. The token is stored in this browser's <code>localStorage</code> and expires automatically.
+        </div>
+        <ol class="mt-3 text-xs text-slate-700 space-y-2 list-decimal pl-5">
+          <li>Open <a href="https://developer.microsoft.com/graph/graph-explorer" target="_blank" rel="noopener" class="text-blue-600 hover:underline">Microsoft Graph Explorer</a> and sign in with your work account.</li>
+          <li>Switch the endpoint version to <strong>beta</strong>, choose <strong>POST</strong>, and run <code class="text-[11px] bg-slate-100 rounded px-1">/copilot/conversations</code> with body <code class="text-[11px] bg-slate-100 rounded px-1">{}</code>.</li>
+          <li>If prompted, use <strong>Modify permissions</strong> or <strong>Consent to permissions</strong>. Your tenant admin may need to approve Copilot Chat API permissions.</li>
+          <li>If Graph Explorer exposes an <strong>Access token</strong> panel/menu, copy that bearer token and paste it into TrialSchema's <strong>Copilot token</strong> field.</li>
+          <li>If no token copy option is available, use Postman or wait for the built-in Microsoft sign-in flow; end users should not need this manual step.</li>
+        </ol>
+        <p class="mt-3 text-xs text-slate-500 leading-relaxed">
+          The token must target Microsoft Graph and the user must have Microsoft 365 Copilot API access. TrialSchema sends prompt text only; it does not attach OneDrive or SharePoint files.
+        </p>
       </div>
     </div>
 
@@ -365,12 +388,14 @@
                     Detect from sample
                   </button>
                   <button id="addCarePathBtn" class="text-xs font-semibold rounded-lg border border-slate-200 bg-white text-slate-700 px-3 py-1.5 hover:bg-slate-50">+ Add</button>
+                  <button id="mergeCarePathsBtn" disabled class="text-xs font-semibold rounded-lg border border-blue-200 bg-white text-blue-700 px-3 py-1.5 hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed" title="Select two or more care paths to merge.">Merge selected</button>
                   <button id="reassignCarePathsBtn" class="text-xs font-semibold rounded-lg border border-slate-200 bg-white text-slate-700 px-3 py-1.5 hover:bg-slate-50" title="Re-run alias-based assignment across all trials">Re-assign all</button>
-                </div>
-              </div>
-              <div id="carePathsStatus" class="mt-2 text-[11px] text-slate-500"></div>
-              <div id="carePathsList" class="mt-3 grid grid-cols-1 gap-2"></div>
-            </div>
+	                </div>
+	              </div>
+	              <div id="carePathsStatus" class="mt-2 text-[11px] text-slate-500"></div>
+              <div id="carePathsMergeHint" class="mt-1 text-[11px] text-slate-400">Tick care paths below, then merge. The first checked care path is kept.</div>
+	              <div id="carePathsList" class="mt-3 grid grid-cols-1 gap-2"></div>
+	            </div>
           </details>
         </div>
       </section>
@@ -378,7 +403,7 @@
       <!-- Progress -->
       <section class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
         <div id="manualBanner" class="hidden mb-4 text-xs bg-amber-50 border border-amber-200 text-amber-800 rounded-xl px-3 py-2">
-          No OpenAI key saved. Trials are listed in <strong>manual mode</strong> &mdash; expand a trial to copy its prompt to your preferred LLM or agent stack, then paste the JSON response back.
+          No selected-provider credential saved. Trials are listed in <strong>manual mode</strong> - expand a trial to copy its prompt to your preferred LLM or agent stack, then paste the JSON response back.
         </div>
         <div class="flex items-center justify-between gap-4">
           <div>
@@ -433,7 +458,7 @@
   </div>
 
   <footer class="max-w-[1600px] mx-auto px-6 py-6 text-[11px] text-slate-400">
-    TrialSchema · API key stays in <code>localStorage</code> · No backend, no telemetry.
+    TrialSchema · Provider credential stays in <code>localStorage</code> · No backend, no telemetry.
   </footer>
 
   <!-- ===================== TEMPLATES ===================== -->
