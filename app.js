@@ -39,6 +39,7 @@ const DEFAULT_ROUTING_PROFILE = {
   default_scan_set: ["intake_notes", "referral_letters", "mdt_notes"],
 };
 const ROUTING_PROFILE_STORAGE = "trialschema.routing.profile.v1";
+const WORKSPACE_EXT_KEY = "org.trialschema.workspace";
 
 function cloneRoutingProfile(profile = DEFAULT_ROUTING_PROFILE) {
   return JSON.parse(JSON.stringify(profile));
@@ -197,6 +198,7 @@ const state = {
   newFile: null,        // manually uploaded source
   existingExport: null, // parsed prior trialschema_export.json
   existingById: {},     // map: trial_id -> structured trial (verbatim re-use)
+  archivedTrialIds: [], // workspace-only UI archive state, persisted in export extensions
   rawRows: [],          // normalized raw rows (pre-LLM)
   results: [],          // final structured trials (in display order)
   resultsById: {},      // map: trial_id -> structured trial
@@ -590,6 +592,130 @@ function parseTrialEnabled(value) {
   return null;
 }
 
+function firstParsedTrialEnabled(values) {
+  for (const value of values) {
+    const parsed = parseTrialEnabled(value);
+    if (parsed !== null) return parsed;
+  }
+  return null;
+}
+
+function sourceTrialEnabled(raw) {
+  const r = raw?.__raw || raw || {};
+  const m = r.metadata || {};
+  if (raw?.__sourceFormat === "spreadsheet") return firstParsedTrialEnabled([r.active, r.status, r.enabled]);
+  const candidates = [r.enabled, r.active, m.enabled, m.active];
+  if (raw?.__sourceFormat !== "ctgov") candidates.push(r.status, m.status);
+  return firstParsedTrialEnabled(candidates);
+}
+
+function deepClone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function normalizeTrialId(value) {
+  return String(value || "").trim();
+}
+
+function isTrialArchivedId(id) {
+  const key = normalizeTrialId(id);
+  return !!key && state.archivedTrialIds.includes(key);
+}
+
+function setArchivedTrialId(id, archived) {
+  const key = normalizeTrialId(id);
+  if (!key) return;
+  const current = new Set(state.archivedTrialIds.map(normalizeTrialId).filter(Boolean));
+  if (archived) current.add(key);
+  else current.delete(key);
+  state.archivedTrialIds = Array.from(current);
+}
+
+function trialItemId(it) {
+  return normalizeTrialId(it?.result?.trial_id || it?.preview?.id);
+}
+
+function pendingWorkspaceId(pending) {
+  return normalizeTrialId(pending?.id || pending?.raw?._id || pending?.raw?.trial_id || pending?.raw?.NCTId || pending?.title);
+}
+
+function normalizeWorkspaceExtension(raw) {
+  const src = raw && typeof raw === "object" ? raw : {};
+  const archived = Array.isArray(src.archived_trial_ids)
+    ? Array.from(new Set(src.archived_trial_ids.map(normalizeTrialId).filter(Boolean)))
+    : [];
+  const pending = (Array.isArray(src.pending_trials) ? src.pending_trials : []).map(p => {
+    const item = p && typeof p === "object" ? p : {};
+    const rawRow = item.raw && typeof item.raw === "object" ? item.raw : {};
+    const id = pendingWorkspaceId({ ...item, raw: rawRow });
+    if (!id) return null;
+    const userEnabled = firstParsedTrialEnabled([item.user_enabled, rawRow.enabled, rawRow.active, rawRow.metadata?.enabled, rawRow.metadata?.active]);
+    return {
+      id,
+      title: String(item.title || rawRow.title || rawRow.trial || rawRow.metadata?.brief_title || id),
+      meta: String(item.meta || ""),
+      source_format: String(item.source_format || "trialgpt"),
+      raw: deepClone(rawRow),
+      user_enabled: userEnabled,
+      archived: item.archived === true || archived.includes(id),
+    };
+  }).filter(Boolean);
+  return { version: 1, pending_trials: pending, archived_trial_ids: archived };
+}
+
+function workspacePendingToRaw(pending) {
+  return {
+    __raw: deepClone(pending.raw || {}),
+    __sourceFormat: pending.source_format || "trialgpt",
+    __workspacePending: true,
+    __workspaceMeta: {
+      id: pending.id,
+      title: pending.title,
+      meta: pending.meta,
+      user_enabled: pending.user_enabled,
+      archived: pending.archived === true,
+    },
+  };
+}
+
+function trialItemToWorkspacePending(it) {
+  const id = trialItemId(it);
+  if (!id || it.result) return null;
+  return {
+    id,
+    title: it.preview?.title || id,
+    meta: it.preview?.meta || "",
+    source_format: it.raw?.__sourceFormat || state.format || "trialgpt",
+    raw: deepClone(it.raw?.__raw || {}),
+    user_enabled: typeof it.userEnabled === "boolean" ? it.userEnabled : sourceTrialEnabled(it.raw),
+    archived: it.archived === true,
+  };
+}
+
+function currentWorkspaceExtension(processedIds = new Set()) {
+  const pendingById = {};
+  const existing = normalizeWorkspaceExtension(state.existingExport?.workspace);
+  existing.pending_trials.forEach(p => {
+    if (!processedIds.has(p.id)) pendingById[p.id] = p;
+  });
+  trialItems.forEach(it => {
+    const p = trialItemToWorkspacePending(it);
+    if (p && !processedIds.has(p.id)) pendingById[p.id] = p;
+  });
+
+  const archived = new Set(state.archivedTrialIds.map(normalizeTrialId).filter(Boolean));
+  trialItems.forEach(it => {
+    const id = trialItemId(it);
+    if (!id) return;
+    if (it.archived) archived.add(id);
+    else archived.delete(id);
+  });
+  return normalizeWorkspaceExtension({
+    pending_trials: Object.values(pendingById),
+    archived_trial_ids: Array.from(archived),
+  });
+}
+
 const INTERVENTION_TYPES = new Set(["drug", "device", "procedure", "biological", "behavioral", "radiation", "diagnostic-test", "other"]);
 
 function normalizeInterventionType(type) {
@@ -670,14 +796,15 @@ function bindManualUploads() {
       if (!parsed || parsed.format !== TS_V1.FORMAT) {
         throw new Error(`Not a TrialSchema ${TS_V1.VERSION} export.`);
       }
-      const trials = fromV1Envelope(parsed).trials;
-      state.existingExport = { trials };
+      const env = fromV1Envelope(parsed);
+      const trials = env.trials;
+      state.existingExport = { trials, workspace: env.workspace };
       state.existingById = {};
       for (const t of trials) {
         if (t && t.trial_id) state.existingById[t.trial_id] = t;
       }
       document.getElementById("existingStats").textContent =
-        `Loaded ${trials.length} reviewed trial${trials.length === 1 ? "" : "s"} — continue this export alone, or reuse matching edits with a new upload.`;
+        `Loaded ${trials.length} reviewed and ${env.workspace.pending_trials.length} pending trial${env.workspace.pending_trials.length === 1 ? "" : "s"} — continue this export alone, or reuse matching edits with a new upload.`;
       clearPreparedTrials("Previous export loaded. Load rows to continue it alone or combine it with a new source.");
     } catch (err) {
       document.getElementById("existingStats").textContent = `Error parsing JSON: ${err.message}`;
@@ -921,7 +1048,11 @@ async function gatherRawRows() {
   const rows = [];
   if (!state.newFile) {
     const prior = state.existingExport?.trials || [];
-    return prior.map(t => ({ __raw: t, __sourceFormat: "trialschema", __structuredTrial: t }));
+    const pending = normalizeWorkspaceExtension(state.existingExport?.workspace).pending_trials;
+    return [
+      ...prior.map(t => ({ __raw: t, __sourceFormat: "trialschema", __structuredTrial: t })),
+      ...pending.map(workspacePendingToRaw),
+    ];
   }
   const f = state.newFile;
   const ext = f.name.toLowerCase().split(".").pop();
@@ -957,7 +1088,10 @@ function parseTextByExt(name, text) {
       const j = JSON.parse(text);
       if (j && j.format === TS_V1.FORMAT) {
         const env = fromV1Envelope(j);
-        return (env?.trials || []).map(t => ({ __raw: t, __sourceFormat: "trialschema", __structuredTrial: t }));
+        return [
+          ...(env?.trials || []).map(t => ({ __raw: t, __sourceFormat: "trialschema", __structuredTrial: t })),
+          ...(env?.workspace?.pending_trials || []).map(workspacePendingToRaw),
+        ];
       }
       let arr;
       if (Array.isArray(j)) arr = j;
@@ -985,6 +1119,13 @@ function wrapRaw(obj) {
 
 // Pull the "best guess" trial id and brief title for display before LLM runs.
 function previewIdAndTitle(raw) {
+  if (raw.__workspaceMeta) {
+    return {
+      id: raw.__workspaceMeta.id || cryptoSlug(JSON.stringify(raw.__raw || {}).slice(0, 80)),
+      title: raw.__workspaceMeta.title || "(Untitled trial)",
+      meta: raw.__workspaceMeta.meta || "",
+    };
+  }
   if (state.format === "spreadsheet" || raw.__sourceFormat === "spreadsheet") {
     const r = raw.__raw || {};
     return {
@@ -1030,10 +1171,13 @@ function classifyRows(rawRows) {
     const direct = row.__structuredTrial
       ? sanitizeTrial(JSON.parse(JSON.stringify(row.__structuredTrial)))
       : null;
-    const reused = direct || (state.existingById[id]
-      ? applySpreadsheetSourceFields(sanitizeTrial(JSON.parse(JSON.stringify(state.existingById[id]))), row)
+    const reused = direct ? applySourceFields(direct, row) : (state.existingById[id]
+      ? applySourceFields(sanitizeTrial(JSON.parse(JSON.stringify(state.existingById[id]))), row, { applyEnabled: false })
       : null);
-    const enabledHint = row.__sourceFormat === "spreadsheet" ? parseTrialEnabled(row.__raw?.active) : null;
+    const enabledHint = row.__workspaceMeta && typeof row.__workspaceMeta.user_enabled === "boolean"
+      ? row.__workspaceMeta.user_enabled
+      : sourceTrialEnabled(row);
+    const archived = row.__workspaceMeta?.archived === true || isTrialArchivedId(id);
     return {
       idx: i,
       preview: { id, title, meta },
@@ -1042,6 +1186,7 @@ function classifyRows(rawRows) {
       result: reused || null,
       error: null,
       userEnabled: enabledHint,
+      archived,
     };
   });
 }
@@ -1499,8 +1644,12 @@ async function callLLMForTrial(raw, signal) {
   return sanitizeTrial(parsed);
 }
 
-function applySpreadsheetSourceFields(trial, raw) {
-  if (!trial || raw?.__sourceFormat !== "spreadsheet") return trial;
+function applySourceFields(trial, raw, { applyEnabled = true } = {}) {
+  if (!trial) return trial;
+  const enabled = sourceTrialEnabled(raw);
+  if (applyEnabled && enabled !== null) trial.enabled = enabled;
+  if (raw?.__sourceFormat !== "spreadsheet") return trial;
+
   const row = raw.__raw || {};
   trial.metadata = trial.metadata || {};
   const m = trial.metadata;
@@ -1508,12 +1657,14 @@ function applySpreadsheetSourceFields(trial, raw) {
   const condition = [row.condition, row.indication].map(s => String(s || "").trim()).filter(Boolean);
   if (condition.length && !(m.conditions || []).length) m.conditions = condition;
 
-  const enabled = parseTrialEnabled(row.active);
-  if (enabled !== null) trial.enabled = enabled;
   m.lifecycle_dates = m.lifecycle_dates || {};
   m.lifecycle_dates.start_date = isoDate(row.start_date);
   m.lifecycle_dates.completion_date = isoDate(row.completion_date);
   return trial;
+}
+
+function applySpreadsheetSourceFields(trial, raw) {
+  return applySourceFields(trial, raw);
 }
 
 // Normalize/repair LLM output so the rest of the app can rely on shape.
@@ -1597,8 +1748,7 @@ function refreshTrialProvenance(trial) {
   if (!trial || !Array.isArray(trialItems)) return;
   const idx = trialItems.findIndex(it => it.result === trial);
   if (idx >= 0) {
-    const list = document.getElementById("trialsList");
-    const prov = list?.querySelector(`details[data-idx="${idx}"] [data-prov]`);
+    const prov = trialRowElement(idx)?.querySelector("[data-prov]");
     if (prov) prov.innerHTML = provenancePillsHtml(trial.edit_state);
   }
   updateEditedStat();
@@ -1836,7 +1986,7 @@ function shouldDetectCarePaths() {
 
 function processableTrialIndexes() {
   return trialItems
-    .map((it, i) => ["pending", "manual", "error"].includes(it.status) ? i : -1)
+    .map((it, i) => (!it.archived && ["pending", "manual", "error"].includes(it.status)) ? i : -1)
     .filter(i => i >= 0);
 }
 
@@ -1862,7 +2012,7 @@ async function processTrialAtIndex(i, processed, total) {
   const rowBusy = setInterval(() => {
     const elapsed = Date.now() - started;
     it.progressLabel = `${llmWaitStage(elapsed)} · ${formatElapsed(elapsed)}`;
-    const root = document.getElementById("trialsList")?.querySelector(`details[data-idx="${i}"]`);
+    const root = trialRowElement(i);
     const text = root?.querySelector("[data-process-feedback-text]");
     if (text) text.textContent = it.progressLabel;
   }, 1000);
@@ -1876,9 +2026,13 @@ async function processTrialAtIndex(i, processed, total) {
       `Finalizing ${it.preview.id} (${processed + 1}/${total})...`
     );
     renderRow(it, i);
-    applySpreadsheetSourceFields(result, it.raw);
+    applySourceFields(result, it.raw);
     if (!result.trial_id || result.trial_id === "string") result.trial_id = it.preview.id;
     if (typeof it.userEnabled === "boolean") result.enabled = it.userEnabled;
+    if (it.archived && result.trial_id !== it.preview.id) {
+      setArchivedTrialId(it.preview.id, false);
+      setArchivedTrialId(result.trial_id, true);
+    }
     markTrialAI(result, activeAIByline());
     it.result = result;
     it.status = "done";
@@ -1908,6 +2062,7 @@ async function processTrialAtIndex(i, processed, total) {
   }
   if (it.status !== "error") it.progressLabel = "";
   renderRow(it, i);
+  applyTrialFilters();
   focusTrialRow(i);
   updateStats(trialItems);
   renderCarePathsPanel();
@@ -2125,8 +2280,7 @@ function focusTrialsList() {
 }
 
 function focusTrialRow(i) {
-  const list = document.getElementById("trialsList");
-  const root = list?.querySelector(`details[data-idx="${i}"]`);
+  const root = trialRowElement(i);
   if (!root) return;
   root.open = true;
   const item = trialItems[i];
@@ -2141,6 +2295,10 @@ function clearPreparedTrials(message = "Source ready. Load trial rows to review 
   state.resultsById = {};
   const list = document.getElementById("trialsList");
   if (list) list.innerHTML = `<div class="p-8 text-sm text-slate-500 text-center">No trials loaded.</div>`;
+  const archivedList = document.getElementById("archivedTrialsList");
+  if (archivedList) archivedList.innerHTML = `<div class="p-6 text-xs text-slate-400 text-center">No archived trials.</div>`;
+  const archivedCount = document.getElementById("archivedListCount");
+  if (archivedCount) archivedCount.textContent = "0";
   const exportBtn = document.getElementById("exportBtn");
   if (exportBtn) exportBtn.disabled = true;
   updateStats([]);
@@ -2154,10 +2312,13 @@ function updateStats(items) {
   const done = items.filter(i => i.status === "done").length;
   const reused = items.filter(i => i.status === "reused").length;
   const err = items.filter(i => i.status === "error").length;
+  const archived = items.filter(i => i.archived).length;
   document.getElementById("statTotal").textContent = total;
   document.getElementById("statDone").textContent = done;
   document.getElementById("statSkip").textContent = reused;
   document.getElementById("statErr").textContent = err;
+  const archivedEl = document.getElementById("statArchived");
+  if (archivedEl) archivedEl.textContent = archived;
   const edited = items.filter(i => i.result?.edit_state?.manual).length;
   const editedEl = document.getElementById("statEdited");
   if (editedEl) editedEl.textContent = edited;
@@ -2437,12 +2598,27 @@ function renderTrials(items) {
   trialItems.push(...items);
   renderCarePathsPanel();
   const list = document.getElementById("trialsList");
+  const archivedList = document.getElementById("archivedTrialsList");
   list.innerHTML = "";
+  if (archivedList) archivedList.innerHTML = "";
   if (!items.length) {
     list.innerHTML = `<div class="p-8 text-sm text-slate-500 text-center">No trials.</div>`;
+    if (archivedList) archivedList.innerHTML = `<div class="p-6 text-xs text-slate-400 text-center">No archived trials.</div>`;
+    updateArchivedListCount();
     return;
   }
-  items.forEach((it, i) => list.appendChild(buildRow(it, i)));
+  items.forEach((it, i) => {
+    const target = it.archived ? archivedList : list;
+    if (target) target.appendChild(buildRow(it, i));
+  });
+  if (!list.querySelector("details")) {
+    list.innerHTML = `<div class="p-8 text-sm text-slate-500 text-center">No worklist trials. Restore archived trials or load new rows.</div>`;
+  }
+  if (archivedList && !archivedList.querySelector("details")) {
+    archivedList.innerHTML = `<div class="p-6 text-xs text-slate-400 text-center">No archived trials.</div>`;
+  }
+  updateArchivedListCount();
+  applyTrialFilters();
 }
 
 function buildRow(it, i) {
@@ -2457,6 +2633,7 @@ function buildRow(it, i) {
       setTrialEnabled(it, !isTrialEnabled(it));
       updateRow(root, it);
       if (root.open) renderBody(root.querySelector("[data-body]"), it, i);
+      applyTrialFilters();
     });
   }
   const oneBtn = root.querySelector("[data-process-one]");
@@ -2465,6 +2642,14 @@ function buildRow(it, i) {
       e.preventDefault();
       e.stopPropagation();
       await processTrialIndexes([i], "single");
+    });
+  }
+  const archiveBtn = root.querySelector("[data-archive-toggle]");
+  if (archiveBtn) {
+    archiveBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setTrialArchived(it, !it.archived);
     });
   }
   updateRow(root, it);
@@ -2476,40 +2661,55 @@ function buildRow(it, i) {
 }
 
 function renderRow(it, i) {
-  const list = document.getElementById("trialsList");
-  const root = list.querySelector(`details[data-idx="${i}"]`);
+  const root = trialRowElement(i);
   if (!root) return;
   updateRow(root, it);
   if (root.open) renderBody(root.querySelector("[data-body]"), it, i);
 }
 
+function trialRowElement(i) {
+  return document.querySelector(`details[data-idx="${i}"]`);
+}
+
 function isTrialEnabled(it) {
-  if (it.result) return it.result.enabled !== false;
-  return it.userEnabled !== false;
+  if (!it?.result) return false;
+  return it.result.enabled !== false;
 }
 
 function setTrialEnabled(it, enabled) {
   if (it.result) {
     it.result.enabled = !!enabled;
     markTrialEdited(it.result);
-  } else {
-    it.userEnabled = !!enabled;
   }
+}
+
+function setTrialArchived(it, archived) {
+  if (!it) return;
+  it.archived = !!archived;
+  const id = trialItemId(it);
+  setArchivedTrialId(id, it.archived);
+  renderTrials(trialItems.slice());
+  updateStats(trialItems);
 }
 
 function updateRow(root, it) {
   const enabledToggle = root.querySelector("[data-trial-enabled-toggle]");
   if (enabledToggle) {
+    const processed = !!it.result;
     const enabled = isTrialEnabled(it);
-    enabledToggle.title = enabled ? "Active for matching — click to deactivate" : "Inactive for matching — click to activate";
+    enabledToggle.disabled = !processed;
+    enabledToggle.title = !processed ? "Process this trial before it can be active for matching" : (enabled ? "Active for matching — click to deactivate" : "Inactive for matching — click to activate");
     enabledToggle.className = "shrink-0 min-w-20 h-7 rounded-md border text-[10px] font-bold transition flex items-center justify-center px-2 " + (
-      enabled
+      !processed
+        ? "bg-slate-50 text-slate-400 border-slate-200 cursor-not-allowed"
+        : enabled
         ? "bg-emerald-500 text-white border-emerald-500 hover:bg-emerald-600"
         : "bg-white text-slate-400 border-slate-300 hover:border-slate-400"
     );
-    enabledToggle.textContent = enabled ? "Active" : "Inactive";
+    enabledToggle.textContent = !processed ? "Unprocessed" : (enabled ? "Active" : "Inactive");
     root.classList.toggle("opacity-60", !enabled);
   }
+  root.dataset.archived = it.archived ? "true" : "false";
   root.querySelector("[data-status]").outerHTML =
     statusBadge(it.status).replace("<span ", `<span data-status `);
   root.querySelector("[data-tid]").textContent = it.preview.id;
@@ -2544,6 +2744,21 @@ function updateRow(root, it) {
     oneBtn.textContent = it.status === "error" ? "Retry" : "Process";
     oneBtn.title = it.status === "error" ? "Retry this trial" : "Process this trial";
   }
+  const archiveBtn = root.querySelector("[data-archive-toggle]");
+  if (archiveBtn) {
+    archiveBtn.textContent = it.archived ? "Restore" : "Archive";
+    archiveBtn.title = it.archived ? "Move this trial back to the worklist" : "Move this trial to the archived list";
+    archiveBtn.className = "shrink-0 rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold hover:bg-slate-50 " + (
+      it.archived
+        ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+        : "border-slate-200 bg-white text-slate-600"
+    );
+  }
+}
+
+function updateArchivedListCount() {
+  const el = document.getElementById("archivedListCount");
+  if (el) el.textContent = String(trialItems.filter(it => it.archived).length);
 }
 
 // Pull the raw inclusion/exclusion text straight from the uploaded source row so
@@ -2724,8 +2939,9 @@ function bindMetadataInputs(host, trial) {
     trial.enabled = !!e.target.checked;
     markTrialEdited(trial);
     const idx = trialItems.findIndex(it => it.result === trial);
-    const row = idx >= 0 ? document.querySelector(`#trialsList details[data-idx="${idx}"]`) : null;
+    const row = idx >= 0 ? trialRowElement(idx) : null;
     if (row) updateRow(row, trialItems[idx]);
+    applyTrialFilters();
   });
   host.querySelectorAll("[data-mfield]").forEach(input => {
     input.addEventListener("input", () => {
@@ -2809,8 +3025,12 @@ function bindManualPanel(host, it, i) {
     txt = txt.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "");
     try {
       const parsed = JSON.parse(txt);
-      const clean = applySpreadsheetSourceFields(sanitizeTrial(parsed), it.raw);
+      const clean = applySourceFields(sanitizeTrial(parsed), it.raw);
       if (!clean.trial_id || clean.trial_id === "string") clean.trial_id = it.preview.id;
+      if (it.archived && clean.trial_id !== it.preview.id) {
+        setArchivedTrialId(it.preview.id, false);
+        setArchivedTrialId(clean.trial_id, true);
+      }
       markTrialAI(clean, "manual-paste");
       it.result = clean;
       it.status = "done";
@@ -2820,6 +3040,7 @@ function bindManualPanel(host, it, i) {
       status.textContent = "Applied ✓";
       status.className = "text-[11px] text-emerald-600";
       renderRow(it, i);
+      applyTrialFilters();
       updateStats(trialItems);
     } catch (e) {
       status.textContent = `Invalid JSON: ${e.message}`;
@@ -4248,8 +4469,29 @@ function tsv1Trial(t) {
   return out;
 }
 
-function toV1Envelope(trials) {
-  return {
+function tsv1WorkspaceExtension(workspace) {
+  const normalized = normalizeWorkspaceExtension(workspace);
+  const out = { version: normalized.version };
+  if (normalized.pending_trials.length) {
+    out.pending_trials = normalized.pending_trials.map(p => {
+      const row = {
+        id: p.id,
+        title: p.title,
+        source_format: p.source_format,
+        raw: p.raw,
+      };
+      if (p.meta) row.meta = p.meta;
+      if (typeof p.user_enabled === "boolean") row.user_enabled = p.user_enabled;
+      if (p.archived) row.archived = true;
+      return row;
+    });
+  }
+  if (normalized.archived_trial_ids.length) out.archived_trial_ids = normalized.archived_trial_ids;
+  return (out.pending_trials?.length || out.archived_trial_ids?.length) ? out : null;
+}
+
+function toV1Envelope(trials, workspace = null) {
+  const out = {
     format:         TS_V1.FORMAT,
     format_version: TS_V1.VERSION,
     generated_at:   new Date().toISOString(),
@@ -4259,6 +4501,9 @@ function toV1Envelope(trials) {
     trial_count:    trials.length,
     trials:         trials.map(tsv1Trial),
   };
+  const workspaceExt = tsv1WorkspaceExtension(workspace);
+  if (workspaceExt) out.extensions = { [WORKSPACE_EXT_KEY]: workspaceExt };
+  return out;
 }
 
 // The normalized care-path enum (id, label, aliases) active at export time.
@@ -4348,6 +4593,8 @@ function fromV1Trial(v) {
 
 function fromV1Envelope(parsed) {
   if (!parsed || parsed.format !== TS_V1.FORMAT) return null;
+  const workspace = normalizeWorkspaceExtension(parsed.extensions?.[WORKSPACE_EXT_KEY]);
+  state.archivedTrialIds = workspace.archived_trial_ids.slice();
   state.routingProfile = fromV1RoutingProfile(parsed.routing_profile);
   saveRoutingProfile();
   renderRoutingProfileEditor();
@@ -4370,7 +4617,7 @@ function fromV1Envelope(parsed) {
     renderCarePathsPanel();
   }
   const trials = Array.isArray(parsed.trials) ? parsed.trials.map(fromV1Trial) : [];
-  return { trials };
+  return { trials, workspace };
 }
 
 function exportUnified() {
@@ -4386,7 +4633,9 @@ function exportUnified() {
   for (const t of state.results) {
     if (t && t.trial_id) merged[t.trial_id] = t;
   }
-  const out = toV1Envelope(Object.values(merged));
+  const processedIds = new Set(Object.keys(merged));
+  const workspace = currentWorkspaceExtension(processedIds);
+  const out = toV1Envelope(Object.values(merged), workspace);
   const blob = new Blob([JSON.stringify(out, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -4399,25 +4648,26 @@ function exportUnified() {
 
 /* =========================== 10. WIRE-UP =========================== */
 
-function bindFilters() {
+function applyTrialFilters() {
   const search = document.getElementById("searchInput");
   const filter = document.getElementById("filterStatus");
-  const apply = () => {
-    const q = search.value.trim().toLowerCase();
-    const f = filter.value;
-    const list = document.getElementById("trialsList");
-    list.querySelectorAll("details").forEach(el => {
-      const idx = +el.dataset.idx;
-      const it = trialItems[idx];
-      if (!it) return;
-      const text = `${it.preview.id} ${it.preview.title} ${it.preview.meta||""}`.toLowerCase();
-      const okQ = !q || text.includes(q);
-      const okF = !f || it.status === f;
-      el.style.display = (okQ && okF) ? "" : "none";
-    });
-  };
-  search.addEventListener("input", apply);
-  filter.addEventListener("change", apply);
+  if (!search || !filter) return;
+  const q = search.value.trim().toLowerCase();
+  const f = filter.value;
+  document.querySelectorAll("#trialsList details, #archivedTrialsList details").forEach(el => {
+    const idx = +el.dataset.idx;
+    const it = trialItems[idx];
+    if (!it) return;
+    const text = `${it.preview.id} ${it.preview.title} ${it.preview.meta||""}`.toLowerCase();
+    const okQ = !q || text.includes(q);
+    const okF = !f || it.status === f;
+    el.style.display = (okQ && okF) ? "" : "none";
+  });
+}
+
+function bindFilters() {
+  document.getElementById("searchInput")?.addEventListener("input", applyTrialFilters);
+  document.getElementById("filterStatus")?.addEventListener("change", applyTrialFilters);
 }
 
 document.addEventListener("DOMContentLoaded", () => {

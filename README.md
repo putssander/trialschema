@@ -62,11 +62,23 @@ Clarified: Participant's age at eligibility assessment must be strictly greater 
 Constraint: age > 18 years
 ```
 
+## Workspace Preservation
+
+Exports keep agent-facing data and UI workflow state separate:
+
+- `trials[]` contains only processed, structured trials for matching agents. Processed inactive trials remain here with their criteria intact and `enabled: false`.
+- Unprocessed source rows are preserved under `extensions["org.trialschema.workspace"].pending_trials`, so they can be processed later without polluting `trials[]`.
+- UI archive choices are preserved under `extensions["org.trialschema.workspace"].archived_trial_ids`. Archiving moves a trial out of the main worklist, but does not automatically change `enabled`.
+
+When a previous export is merged with a newer source file, reviewed structured trials, inactive toggles, archive choices, and pending raw rows are preserved so users do not have to repeat prior work.
+
 ## Tests
 
 Run the static prompt/schema regression checks:
 
 ```bash
+node tests/inactive-export.test.mjs
+node tests/workspace-roundtrip.test.mjs
 node tests/prompt-quality.test.mjs
 node --check app.js
 git diff --check
