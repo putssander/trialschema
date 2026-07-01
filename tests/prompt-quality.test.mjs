@@ -6,9 +6,11 @@ import { dirname, join } from "node:path";
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
 const app = readFileSync(join(root, "app.js"), "utf8");
+const index = readFileSync(join(root, "index.html"), "utf8");
 const schema = readFileSync(join(root, "docs/schemas/trialschema.v1.schema.json"), "utf8");
 const readme = readFileSync(join(root, "README.md"), "utf8");
 const compactApp = app.replace(/\s+/g, " ");
+const compactIndex = index.replace(/\s+/g, " ");
 const compactSchema = schema.replace(/\s+/g, " ");
 const compactReadme = readme.replace(/\s+/g, " ");
 
@@ -141,6 +143,14 @@ assert.ok(
   "Copilot token mode should disable web grounding for TrialSchema prompts",
 );
 assert.ok(
+  app.includes("Build the enum primarily from the distinct source care_path values"),
+  "care-path detection should stay bounded by source care_path values",
+);
+assert.ok(
+  app.includes("Zorglijn overstijgend"),
+  "care-path detection should handle Dutch cross-care-path source values",
+);
+assert.ok(
   compactApp.includes("function buildCriterionClarifyPrompt"),
   "clarification prompt should be reusable by API and manual copy flows",
 );
@@ -160,6 +170,43 @@ assert.ok(
   compactReadme.includes("Microsoft 365 Copilot Token Testing"),
   "README should explain how to test Copilot token mode",
 );
+assert.ok(
+  app.includes("copilotTokenScopeDiagnostics"),
+  "Copilot 403 errors should include local token scope diagnostics",
+);
+assert.ok(
+  app.includes("failed while creating the Copilot conversation"),
+  "Copilot create-conversation failures should explain that no trial prompt was sent",
+);
+assert.ok(
+  app.includes("copilotNestedErrorText"),
+  "Copilot Graph errors should unwrap nested conversation messages",
+);
+assert.ok(
+  app.includes("does not currently have a valid Microsoft 365 Copilot add-on license"),
+  "Copilot license errors should be surfaced clearly",
+);
+assert.ok(
+  includesText(readme, "Graph Explorer itself returns `UnknownError` on `POST /copilot/conversations`"),
+  "README should explain upstream Graph Explorer create-conversation failures",
+);
+assert.ok(
+  includesText(readme, "Graph permissions are not the blocker"),
+  "README should explain valid-license Copilot failures",
+);
+for (const scope of [
+  "Sites.Read.All",
+  "Mail.Read",
+  "People.Read.All",
+  "OnlineMeetingTranscript.Read.All",
+  "Chat.Read",
+  "ChannelMessage.Read.All",
+  "ExternalItem.Read.All",
+]) {
+  assert.ok(app.includes(scope), `app should know Copilot Chat API scope ${scope}`);
+  assert.ok(compactIndex.includes(scope), `token help modal should mention Copilot Chat API scope ${scope}`);
+  assert.ok(compactReadme.includes(scope), `README should mention Copilot Chat API scope ${scope}`);
+}
 
 assert.ok(compactSchema.includes('"source_text"'), "schema should expose source_text");
 assert.ok(compactSchema.includes('"clarified_text"'), "schema should expose clarified_text");
@@ -186,6 +233,10 @@ assert.ok(
 assert.ok(
   compactSchema.includes("A normalized care path in the export-level enum"),
   "schema should describe care paths as care paths, not only generic buckets",
+);
+assert.ok(
+  compactSchema.includes("cross-domain/cross-care-path entry"),
+  "schema should document broad cross-care-path buckets",
 );
 assert.ok(
   compactReadme.includes("What to check") && compactReadme.includes("Where to look") && compactReadme.includes("How to evaluate"),

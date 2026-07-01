@@ -168,7 +168,7 @@
 
     "CarePathCatalogEntry": {
       "type": "object",
-      "description": "A normalized care path in the export-level enum, used as a first-pass matching filter before evaluating criteria. TrialSchema v1 stores stable care-path references such as breast_cancer, heart_failure, or type_2_diabetes; detailed pathway phases or actions can be modeled in extensions or future versions when needed. Trials reference the path by id via care_path_ids. The id and label are English; aliases capture original source values and cross-language spellings used for auto-assignment.",
+      "description": "A normalized care path in the export-level enum, used as a first-pass matching filter before evaluating criteria. TrialSchema v1 stores stable care-path references such as breast_cancer, heart_failure, or type_2_diabetes; broad source buckets that mean not tied to one disease area should be represented as the English cross-domain/cross-care-path entry cross_care_path, not expanded into every disease path. Detailed pathway phases or actions can be modeled in extensions or future versions when needed. Trials reference the path by id via care_path_ids. The id and label are English; aliases capture original source values and cross-language spellings used for auto-assignment.",
       "required": ["id", "label"],
       "additionalProperties": false,
       "properties": {

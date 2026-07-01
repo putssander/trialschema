@@ -250,6 +250,16 @@ const PROVIDER_STORAGE = "trialschema.llm.provider";
 const KEY_STORAGE = "trialschema.openai.key";
 const MODEL_STORAGE = "trialschema.openai.model";
 const COPILOT_TOKEN_STORAGE = "trialschema.copilot.graph_token";
+const COPILOT_CHAT_REQUIRED_SCOPES = Object.freeze([
+  "Sites.Read.All",
+  "Mail.Read",
+  "People.Read.All",
+  "OnlineMeetingTranscript.Read.All",
+  "Chat.Read",
+  "ChannelMessage.Read.All",
+  "ExternalItem.Read.All",
+]);
+const COPILOT_CHAT_REQUIRED_SCOPES_TEXT = COPILOT_CHAT_REQUIRED_SCOPES.join(", ");
 
 function normalizeProvider(value) {
   return value === "copilot" ? "copilot" : "openai";
@@ -1596,9 +1606,118 @@ async function graphFetchJson(url, { method = "POST", body, signal } = {}) {
   });
   if (!res.ok) {
     const errTxt = await res.text().catch(() => "");
-    throw new Error(`Microsoft Graph HTTP ${res.status}: ${errTxt.slice(0, 320)}`);
+    const err = new Error(copilotGraphErrorMessage(url, res.status, errTxt));
+    err.status = res.status;
+    err.responseText = errTxt;
+    err.url = url;
+    throw err;
   }
   return res.json();
+}
+
+function copilotGraphErrorMessage(url, status, errTxt) {
+  const raw = String(errTxt || "").trim();
+  const nestedText = copilotNestedErrorText(raw);
+  const detail = nestedText ? `: Copilot response: ${nestedText.slice(0, 240)}` : (raw ? `: ${raw.slice(0, 320)}` : "");
+  const licenseHint = /valid license/i.test(nestedText)
+    ? " The signed-in account does not currently have a valid Microsoft 365 Copilot add-on license for this API, even if Graph permissions look correct. Ask the admin to assign or activate the license for this exact work account, then get a fresh token."
+    : "";
+  const createHint = /\/copilot\/conversations$/i.test(url)
+    ? ` Microsoft Graph failed while creating the Copilot conversation, before TrialSchema sent any trial prompt. Verify POST /beta/copilot/conversations with body {}, the user's Microsoft 365 Copilot add-on license, tenant access to the Copilot Chat API preview, and the delegated Graph token scopes. If Graph Explorer returns UnknownError with an empty message here too, give Microsoft support the request-id/date from the response.${copilotTokenScopeDiagnostics()}`
+    : "";
+  const chatHint = status === 403 && /\/copilot\/conversations\/.+\/chat$/i.test(url)
+    ? ` The conversation was created, but Microsoft Graph denied the chat action. A successful POST /copilot/conversations check is not enough; verify POST /copilot/conversations/{id}/chat with this token too. The Chat API requires a Microsoft 365 Copilot add-on license for this user and a delegated Graph token with all of these scopes: ${COPILOT_CHAT_REQUIRED_SCOPES_TEXT}.${copilotTokenScopeDiagnostics()}`
+    : "";
+  return `Microsoft Graph HTTP ${status}${detail}${licenseHint}${createHint}${chatHint}`;
+}
+
+function tryParseJsonObject(text) {
+  try {
+    const value = JSON.parse(String(text || ""));
+    return value && typeof value === "object" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function copilotNestedErrorText(errTxt) {
+  const envelope = tryParseJsonObject(errTxt);
+  const nested = tryParseJsonObject(envelope?.error?.message);
+  return nested ? latestCopilotText(nested) : "";
+}
+
+function decodeJwtPayload(token) {
+  const payload = String(token || "").split(".")[1];
+  if (!payload || typeof atob !== "function") return null;
+  try {
+    const base64 = payload.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, "=");
+    return JSON.parse(atob(padded));
+  } catch {
+    return null;
+  }
+}
+
+function copilotTokenScopeDiagnostics() {
+  const claims = decodeJwtPayload(state.copilotToken);
+  if (!claims) return " Token check: could not decode the pasted JWT locally.";
+
+  const aud = String(claims.aud || "");
+  const scopes = new Set(String(claims.scp || "").split(/\s+/).filter(Boolean));
+  const roles = Array.isArray(claims.roles) ? claims.roles.filter(Boolean) : [];
+  const notes = [];
+  if (aud && aud !== "https://graph.microsoft.com" && aud !== "00000003-0000-0000-c000-000000000000") {
+    notes.push(`token audience is ${aud}, not Microsoft Graph`);
+  }
+  if (!scopes.size) {
+    notes.push("no delegated scp claim was found");
+    if (roles.length) notes.push("application role tokens are not supported for this API");
+  } else {
+    const missing = COPILOT_CHAT_REQUIRED_SCOPES.filter(scope => !scopes.has(scope));
+    if (missing.length) notes.push(`missing delegated scopes: ${missing.join(", ")}`);
+  }
+  return notes.length
+    ? ` Token check: ${notes.join("; ")}.`
+    : " Token check: the required delegated scopes appear to be present; verify the user's Microsoft 365 Copilot license and tenant access.";
+}
+
+function copilotChatPayload(prompt, { strictWebOff = true } = {}) {
+  const text = strictWebOff
+    ? prompt
+    : `${prompt}\n\nUse only the trial text provided above. Do not browse or use external context.`;
+  return strictWebOff
+    ? {
+        message: { text },
+        locationHint: { timeZone: copilotTimeZone() },
+        contextualResources: { webContext: { isWebEnabled: false } },
+      }
+    : {
+        message: { text },
+        locationHint: { timeZone: copilotTimeZone() },
+      };
+}
+
+async function callCopilotChat(conversationId, prompt, signal) {
+  const url = `https://graph.microsoft.com/beta/copilot/conversations/${encodeURIComponent(conversationId)}/chat`;
+  try {
+    return await graphFetchJson(url, {
+      body: copilotChatPayload(prompt),
+      signal,
+    });
+  } catch (err) {
+    if (err?.status !== 403) throw err;
+    try {
+      return await graphFetchJson(url, {
+        body: copilotChatPayload(prompt, { strictWebOff: false }),
+        signal,
+      });
+    } catch (fallbackErr) {
+      if (fallbackErr && typeof fallbackErr.message === "string") {
+        fallbackErr.message += " TrialSchema also retried with a minimal chat payload that keeps the required locationHint.timeZone, and Graph still returned this error.";
+      }
+      throw fallbackErr;
+    }
+  }
 }
 
 async function callCopilotJson({ system, user, signal }) {
@@ -1614,17 +1733,7 @@ async function callCopilotJson({ system, user, signal }) {
     "",
     formatPromptForManualLLM(system, user),
   ].join("\n");
-  const response = await graphFetchJson(
-    `https://graph.microsoft.com/beta/copilot/conversations/${encodeURIComponent(conversationId)}/chat`,
-    {
-      body: {
-        message: { text: prompt },
-        locationHint: { timeZone: copilotTimeZone() },
-        contextualResources: { webContext: { isWebEnabled: false } },
-      },
-      signal,
-    },
-  );
+  const response = await callCopilotChat(conversationId, prompt, signal);
   return parseModelJson(latestCopilotText(response), "Microsoft 365 Copilot");
 }
 
@@ -1956,7 +2065,7 @@ async function prepareQueue() {
     setProgress(100, "Rows loaded. Manual mode - expand a trial to copy its prompt and paste back JSON.");
   } else {
     if (manualBanner) manualBanner.classList.add("hidden");
-    const nextStep = state.processMode === "all" ? "Run all pending trials when ready." : "Process one trial or switch to Batch.";
+    const nextStep = state.processMode === "all" ? "Run all pending trials when ready." : "Click Process this on the trial row you want to structure next.";
     setProgress(100, `Loaded ${items.length} trial row${items.length === 1 ? "" : "s"}. ${nextStep}`);
   }
   updateProcessButtonLabel();
@@ -1977,10 +2086,14 @@ function shouldDetectCarePaths() {
   const sourceHints = carePathHintsFromRows(state.rawRows);
   if (!sourceHints.length) return false;
   const sourceKeys = new Set(sourceHints.map(carePathAliasKey).filter(Boolean));
+  const usedIds = carePathIdsUsedByStructuredTrials();
+  if (state.carePaths.some(cp => {
+    if (!cp || isDefaultCarePathId(cp.id) || usedIds.has(cp.id)) return false;
+    return !carePathEntryMatchesKeys(cp, sourceKeys);
+  })) return true;
   return state.carePaths.some(cp => {
     if (cp?._normalized) return false;
-    const keys = uniqueCarePathAliases([cp.id, cp.label, ...(cp.aliases || [])]);
-    return keys.some(k => sourceKeys.has(carePathAliasKey(k)));
+    return carePathEntryMatchesKeys(cp, sourceKeys);
   }) || sourceHints.some(hint => !findCarePathFromHint(hint));
 }
 
@@ -2140,12 +2253,17 @@ async function runQueue() {
   if (state.running) return;
   if (!trialItems.length) {
     const prepared = await prepareQueue();
-    if (!prepared || state.processMode === "single") return;
+    if (!prepared) return;
   }
 
   const pending = processableTrialIndexes();
-  const idxs = state.processMode === "single" ? pending.slice(0, 1) : pending;
-  await processTrialIndexes(idxs, state.processMode === "single" ? "single" : "batch");
+  if (state.processMode === "single") {
+    setProgress(100, pending.length ? "Choose a trial row and click Process this." : "No pending trials to process.");
+    updateProcessButtonLabel();
+    focusTrialsList();
+    return;
+  }
+  await processTrialIndexes(pending, "batch");
 }
 
 function sleep(ms) {
@@ -2228,8 +2346,9 @@ function updateProcessButtonLabel() {
     label.textContent = "Load Trial Rows";
     btn.disabled = false;
   } else if (state.processMode === "single") {
-    label.textContent = "Process Next Trial";
-    btn.disabled = false;
+    const pending = processableTrialIndexes().length;
+    label.textContent = pending ? "Choose Trial Row" : "No Pending Trials";
+    btn.disabled = !pending;
   } else {
     label.textContent = "Run All Pending Trials";
     btn.disabled = false;
@@ -2741,8 +2860,8 @@ function updateRow(root, it) {
     const canProcess = hasLLMCredentials() && !state.running && ["pending", "manual", "error"].includes(it.status);
     oneBtn.classList.toggle("hidden", !canProcess);
     oneBtn.disabled = !canProcess;
-    oneBtn.textContent = it.status === "error" ? "Retry" : "Process";
-    oneBtn.title = it.status === "error" ? "Retry this trial" : "Process this trial";
+    oneBtn.textContent = it.status === "error" ? "Retry this" : "Process this";
+    oneBtn.title = it.status === "error" ? "Retry this trial" : "Process this trial next";
   }
   const archiveBtn = root.querySelector("[data-archive-toggle]");
   if (archiveBtn) {
@@ -2838,7 +2957,7 @@ function renderBody(host, it, i) {
     ` : "";
     host.innerHTML = manualPanel + rawPreview + (it.error
       ? `<div class="text-sm text-rose-700 bg-rose-50 border border-rose-200 rounded-xl p-3">${escapeHtml(it.error)}</div>`
-      : `<div class="text-sm text-slate-500 italic p-3">${hasLLM ? "Not processed yet. Use Process on this trial or Process Next Trial to structure the criteria above." : "Not processed yet. Use the manual panel above, or save a provider token and run the queue."}</div>`);
+      : `<div class="text-sm text-slate-500 italic p-3">${hasLLM ? "Not processed yet. Use Process this on this trial row to structure the criteria above." : "Not processed yet. Use the manual panel above, or save a provider token and run the queue."}</div>`);
     if (!hasLLM) bindManualPanel(host, it, i);
     return;
   }
@@ -3099,12 +3218,28 @@ function refreshGuidanceSuggestions(dlist, criterion) {
 // place a patient into one of these buckets (e.g. "breast_cancer", "heart_failure",
 // "type_2_diabetes") regardless of source language or phrasing.
 const CAREPATHS_STORAGE = "trialschema.carepaths";
+const DEFAULT_CARE_PATHS = Object.freeze([
+  {
+    id: "cross_care_path",
+    label: "Cross-Care Path",
+    aliases: [
+      "Zorglijn overstijgend",
+      "Zorglijn-overstijgend",
+      "Zorgoverstijgend",
+      "Zorglijn overstijgende studies",
+      "Cross-domain",
+      "Cross-care path",
+      "Not tied to one disease area",
+    ],
+  },
+]);
 
 function loadCarePaths() {
   try {
     const arr = JSON.parse(localStorage.getItem(CAREPATHS_STORAGE) || "[]");
     state.carePaths = Array.isArray(arr) ? arr.map(normalizeCarePathEntry).filter(Boolean) : [];
   } catch { state.carePaths = []; }
+  ensureDefaultCarePaths();
 }
 function saveCarePaths() {
   try { localStorage.setItem(CAREPATHS_STORAGE, JSON.stringify(state.carePaths)); } catch {}
@@ -3149,7 +3284,14 @@ function cleanCarePathAlias(value) {
 }
 
 function carePathAliasKey(value) {
-  return cleanCarePathAlias(value).toLowerCase();
+  return cleanCarePathAlias(value)
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function uniqueCarePathAliases(values) {
@@ -3172,6 +3314,14 @@ function normalizeCarePathEntry(cp) {
   if (cp._provisional === true) out._provisional = true;
   if (cp._normalized === true) out._normalized = true;
   return out;
+}
+
+function defaultCarePathEntries() {
+  return DEFAULT_CARE_PATHS.map(cp => normalizeCarePathEntry({ ...cp, _normalized: true })).filter(Boolean);
+}
+
+function isDefaultCarePathId(id) {
+  return DEFAULT_CARE_PATHS.some(cp => slugifyCarePath(cp.id) === slugifyCarePath(id));
 }
 
 function carePathLabelFromHint(value) {
@@ -3218,6 +3368,93 @@ function findCarePathFromHint(value) {
     String(c.label || "").toLowerCase() === label.toLowerCase() ||
     (c.aliases || []).some(a => carePathAliasKey(a) === alias)
   ) || null;
+}
+
+function carePathEntryKeys(cp) {
+  return uniqueCarePathAliases([cp?.id, cp?.label, ...((cp?.aliases || []))])
+    .map(carePathAliasKey)
+    .filter(Boolean);
+}
+
+function carePathEntryMatchesKeys(cp, keys) {
+  if (!keys?.size) return false;
+  return carePathEntryKeys(cp).some(k => keys.has(k));
+}
+
+function canonicalizeCarePathEntry(cp) {
+  if (!cp) return cp;
+  const match = defaultCarePathEntries().find(def => {
+    const defKeys = new Set(carePathEntryKeys(def));
+    return cp.id === def.id || carePathEntryMatchesKeys(cp, defKeys);
+  });
+  if (!match) return cp;
+  return mergeCarePathEntryData(
+    { ...match, aliases: [...(match.aliases || [])], _normalized: true },
+    cp,
+    { preferSourceLabel: false },
+  );
+}
+
+function mergeCarePathEntryData(target, src, { preferSourceLabel = false } = {}) {
+  if (!target || !src) return target;
+  if (preferSourceLabel && src.label) target.label = src.label;
+  target.aliases = uniqueCarePathAliases([
+    ...(target.aliases || []),
+    target.id,
+    target.label,
+    src.id,
+    src.label,
+    ...(src.aliases || []),
+  ]);
+  if (src._normalized) target._normalized = true;
+  if (target._normalized) delete target._provisional;
+  return target;
+}
+
+function dedupeCarePathEntries(entries) {
+  const out = [];
+  (entries || []).forEach(cp => {
+    const keys = new Set(carePathEntryKeys(cp));
+    const existing = out.find(item => carePathEntryMatchesKeys(item, keys));
+    if (existing) {
+      mergeCarePathEntryData(existing, cp, { preferSourceLabel: false });
+    } else {
+      out.push({ ...cp, aliases: uniqueCarePathAliases(cp.aliases || []) });
+    }
+  });
+  return out;
+}
+
+function ensureDefaultCarePaths() {
+  const before = JSON.stringify(state.carePaths || []);
+  state.carePaths = dedupeCarePathEntries((state.carePaths || []).map(canonicalizeCarePathEntry).filter(Boolean));
+  defaultCarePathEntries().forEach(def => {
+    const defKeys = new Set(carePathEntryKeys(def));
+    const existing = state.carePaths.find(cp => cp.id === def.id || carePathEntryMatchesKeys(cp, defKeys));
+    if (existing) {
+      mergeCarePathEntryData(existing, def, { preferSourceLabel: false });
+    } else {
+      state.carePaths.unshift(def);
+    }
+  });
+  return JSON.stringify(state.carePaths || []) !== before;
+}
+
+function carePathIdsUsedByStructuredTrials() {
+  const used = new Set();
+  const addTrial = (t) => {
+    (Array.isArray(t?.care_path_ids) ? t.care_path_ids : [])
+      .map(slugifyCarePath)
+      .filter(Boolean)
+      .forEach(id => used.add(id));
+  };
+  (state.results || []).forEach(addTrial);
+  Object.values(state.resultsById || {}).forEach(addTrial);
+  const prior = state.existingExport
+    ? (Array.isArray(state.existingExport) ? state.existingExport : (state.existingExport.trials || []))
+    : [];
+  prior.forEach(addTrial);
+  return used;
 }
 
 function upsertCarePathFromHint(value, { allowCreate = true, provisional = true } = {}) {
@@ -3334,6 +3571,7 @@ function mergeSelectedCarePaths() {
   const byId = Object.fromEntries((state.carePaths || []).map(cp => [cp.id, cp]));
   const selected = ids.map(id => byId[id]).filter(Boolean);
   if (selected.length < 2) return null;
+  if (selected.slice(1).some(cp => isDefaultCarePathId(cp.id))) return null;
 
   const target = selected[0];
   const mergedIds = new Set(selected.slice(1).map(cp => cp.id));
@@ -3375,37 +3613,48 @@ function normalizeDetectedCarePath(cp) {
   const id = slugifyCarePath(cp.id || cp.label || "");
   const label = String(cp.label || carePathLabelFromHint(id)).trim();
   if (!id || !label) return null;
-  return {
+  return canonicalizeCarePathEntry({
     id,
     label,
     aliases: uniqueCarePathAliases(Array.isArray(cp.aliases) ? cp.aliases : []),
     _normalized: true,
-  };
+  });
 }
 
-function mergeDetectedCarePaths(list) {
-  const detected = (Array.isArray(list) ? list : []).map(normalizeDetectedCarePath).filter(Boolean);
+function mergeDetectedCarePaths(list, { sourceHints = [], pruneStale = false } = {}) {
+  const detected = dedupeCarePathEntries((Array.isArray(list) ? list : []).map(normalizeDetectedCarePath).filter(Boolean));
   if (!detected.length) return;
+  (state.carePaths || []).forEach(existing => {
+    if (!existing) return;
+    const existingKeys = new Set(carePathEntryKeys(existing));
+    const target = detected.find(cp => carePathEntryMatchesKeys(cp, existingKeys));
+    if (target) mergeCarePathEntryData(target, existing, { preferSourceLabel: false });
+  });
   const detectedIds = new Set(detected.map(cp => cp.id));
-  const detectedAliases = new Set(detected.flatMap(cp => cp.aliases || []).map(carePathAliasKey).filter(Boolean));
+  const detectedAliases = new Set(detected.flatMap(carePathEntryKeys).filter(Boolean));
+  const sourceKeys = new Set((sourceHints || []).map(carePathAliasKey).filter(Boolean));
+  const usedIds = carePathIdsUsedByStructuredTrials();
   const keep = (state.carePaths || []).filter(cp => {
     if (!cp || cp._provisional) return false;
+    if (isDefaultCarePathId(cp.id)) return true;
     if (detectedIds.has(cp.id)) return true;
-    const keys = uniqueCarePathAliases([cp.id, cp.label, ...(cp.aliases || [])]);
-    return !keys.some(k => detectedAliases.has(carePathAliasKey(k)));
+    const keys = carePathEntryKeys(cp);
+    const overlapsDetected = keys.some(k => detectedAliases.has(k));
+    if (overlapsDetected) return false;
+    const matchesCurrentSource = keys.some(k => sourceKeys.has(k));
+    if (pruneStale && sourceKeys.size && !matchesCurrentSource && !usedIds.has(cp.id)) return false;
+    return true;
   });
   const byId = Object.fromEntries(keep.map(cp => [cp.id, { ...cp, aliases: uniqueCarePathAliases(cp.aliases || []) }]));
   detected.forEach(cp => {
     if (byId[cp.id]) {
-      byId[cp.id].label = cp.label;
-      byId[cp.id].aliases = uniqueCarePathAliases([...(byId[cp.id].aliases || []), ...(cp.aliases || [])]);
-      byId[cp.id]._normalized = true;
-      delete byId[cp.id]._provisional;
+      mergeCarePathEntryData(byId[cp.id], cp, { preferSourceLabel: true });
     } else {
       byId[cp.id] = cp;
     }
   });
   state.carePaths = Object.values(byId);
+  ensureDefaultCarePaths();
 }
 
 async function detectCarePathsFromSample({ silent = false, fromPipeline = false } = {}) {
@@ -3450,7 +3699,7 @@ async function detectCarePathsFromSample({ silent = false, fromPipeline = false 
     },
     progressText: (_elapsed, stage) => `Detecting care paths from sample: ${stage}`,
   });
-  const sys = `You normalize clinical trials from any field of medicine into a compact enum of CARE PATHS: clinical-domain buckets used downstream for patient matching. Infer the English clinical meaning from the supplied source values and trial context. Return STRICT JSON: {"care_paths":[{"id":"english_snake_case","label":"English display name","aliases":["original source value"]}]}. Requirements: id MUST be English snake_case; label MUST be an English display name; aliases MUST preserve the original source care_path values and source-language spellings as written. Do not copy a non-English source value into id or label. Choose specificity that matches the sample. No prose.`;
+  const sys = `You normalize clinical trials from any field of medicine into a compact enum of CARE PATHS: clinical-domain buckets used downstream for patient matching. Infer the English clinical meaning from the supplied source values and trial context. Return STRICT JSON: {"care_paths":[{"id":"english_snake_case","label":"English display name","aliases":["original source value"]}]}. Requirements: id MUST be English snake_case; label MUST be an English display name; aliases MUST preserve the original source care_path values and source-language spellings as written. Do not copy a non-English source value into id or label. Build the enum primarily from the distinct source care_path values; do not invent extra care paths merely from trial titles, conditions, or eligibility text when source care_path values are present. Merge only true synonyms, translations, spelling variants, or historical labels into one entry. If a source value means the trial is not tied to one disease area or care path (for example Dutch "Zorglijn overstijgend"), create ONE English cross-domain/cross-care-path bucket for that value and keep the original phrase as an alias; do not expand it into all disease-specific buckets. Choose specificity that matches the source values. No prose.`;
   const condensed = sample.map((r, i) => {
     const title = r.__raw?.metadata?.brief_title || r.__raw?.brief_title || r.__raw?.trial || r.__raw?.Studietitel || r.__raw?.Titel || "";
     const conditions = r.__raw?.metadata?.conditions || r.__raw?.condition || r.__raw?.indication || "";
@@ -3466,6 +3715,7 @@ async function detectCarePathsFromSample({ silent = false, fromPipeline = false 
       user: [
         "Original source care_path values. Preserve these as aliases; map their ids/labels to English:",
         sourceHints.length ? sourceHints.map(v => `- ${v}`).join("\n") : "(none supplied)",
+        sourceHints.length ? `There are ${sourceHints.length} distinct source care_path value(s). Return a compact normalized enum that covers these values; the output should normally have the same count unless multiple source values are true synonyms.` : "",
         "",
         "Current care_path catalog, if any. Normalize provisional/source-language entries into English ids and labels:",
         currentCatalog,
@@ -3476,7 +3726,7 @@ async function detectCarePathsFromSample({ silent = false, fromPipeline = false 
       signal: state._abortController?.signal,
     });
     const list = Array.isArray(parsed.care_paths) ? parsed.care_paths : [];
-    mergeDetectedCarePaths(list);
+    mergeDetectedCarePaths(list, { sourceHints, pruneStale: true });
     saveCarePaths();
     (state.results || []).forEach(t => { if (t) t.care_path_ids = normalizeCarePathIds(t.care_path_ids); });
     const changed = reassignAllCarePaths();
@@ -3551,29 +3801,32 @@ function renderCarePathsPanel() {
   const counts = {};
   (state.results || []).forEach(t => (t?.care_path_ids || []).forEach(id => { counts[id] = (counts[id] || 0) + 1; }));
   const mergeSelection = selectedCarePathIds();
-	  list.innerHTML = state.carePaths.map(cp => {
-	    const selected = mergeSelection.includes(cp.id);
-	    const primary = mergeSelection.length > 1 && mergeSelection[0] === cp.id;
-	    return `
-	    <div class="border rounded-lg p-2.5 ${selected ? "border-blue-200 bg-blue-50/50" : "border-slate-200 bg-slate-50/50"}" data-cp="${escapeHtml(cp.id)}">
-	      <div class="flex flex-wrap items-center gap-2">
-        <label class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border cursor-pointer transition ${selected ? "border-blue-300 bg-blue-100" : "border-slate-200 bg-white hover:border-blue-200"}" title="Include this care path in the next merge">
-          <input data-cp-select type="checkbox" ${selected ? "checked" : ""}
-            aria-label="Include ${escapeHtml(cp.label)} in merge"
-            class="h-3.5 w-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500"/>
-        </label>
-	        <input data-cp-label class="flex-1 text-sm font-semibold text-slate-900 bg-transparent border-b border-transparent hover:border-slate-200 focus:border-blue-400 focus:outline-none px-0 py-0.5" value="${escapeHtml(cp.label)}"/>
-	        <span class="text-[10px] font-mono text-slate-400">${escapeHtml(cp.id)}</span>
-        ${primary ? `<span class="badge bg-emerald-50 text-emerald-700 border border-emerald-200">kept</span>` : ""}
-        <span class="badge bg-blue-50 text-blue-700 border border-blue-200">${counts[cp.id] || 0}</span>
-        <button data-cp-delete title="Delete care path" class="text-slate-400 hover:text-rose-600 text-sm leading-none px-1">×</button>
+  list.innerHTML = state.carePaths.map(cp => {
+    const selected = mergeSelection.includes(cp.id);
+    const primary = mergeSelection.length > 1 && mergeSelection[0] === cp.id;
+    const builtin = isDefaultCarePathId(cp.id);
+    return `
+      <div class="border rounded-lg p-2.5 ${selected ? "border-blue-200 bg-blue-50/50" : "border-slate-200 bg-slate-50/50"}" data-cp="${escapeHtml(cp.id)}">
+        <div class="flex flex-wrap items-center gap-2">
+          <label class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border cursor-pointer transition ${selected ? "border-blue-300 bg-blue-100" : "border-slate-200 bg-white hover:border-blue-200"}" title="Include this care path in the next merge">
+            <input data-cp-select type="checkbox" ${selected ? "checked" : ""}
+              aria-label="Include ${escapeHtml(cp.label)} in merge"
+              class="h-3.5 w-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500"/>
+          </label>
+          <input data-cp-label ${builtin ? "readonly title=\"Built-in care path\"" : ""} class="flex-1 text-sm font-semibold text-slate-900 bg-transparent border-b border-transparent hover:border-slate-200 focus:border-blue-400 focus:outline-none px-0 py-0.5 ${builtin ? "cursor-default" : ""}" value="${escapeHtml(cp.label)}"/>
+          <span class="text-[10px] font-mono text-slate-400">${escapeHtml(cp.id)}</span>
+          ${builtin ? `<span class="badge bg-slate-100 text-slate-600 border border-slate-200">built-in</span>` : ""}
+          ${primary ? `<span class="badge bg-emerald-50 text-emerald-700 border border-emerald-200">kept</span>` : ""}
+          <span class="badge bg-blue-50 text-blue-700 border border-blue-200">${counts[cp.id] || 0}</span>
+          <button data-cp-delete title="${builtin ? "Built-in care path" : "Delete care path"}" class="${builtin ? "hidden" : ""} text-slate-400 hover:text-rose-600 text-sm leading-none px-1">×</button>
+        </div>
+        <input data-cp-aliases placeholder="original source values / aliases, comma-separated"
+          ${builtin ? "readonly title=\"Built-in aliases\"" : ""}
+          class="mt-1.5 w-full text-[11px] font-mono rounded border border-slate-200 bg-white focus:border-blue-400 focus:outline-none px-2 py-1 ${builtin ? "cursor-default text-slate-500" : ""}"
+          value="${escapeHtml((cp.aliases || []).join(", "))}"/>
       </div>
-      <input data-cp-aliases placeholder="original source values / aliases, comma-separated"
-        class="mt-1.5 w-full text-[11px] font-mono rounded border border-slate-200 bg-white focus:border-blue-400 focus:outline-none px-2 py-1"
-        value="${escapeHtml((cp.aliases || []).join(", "))}"/>
-    </div>
-  `;
-  }).join("");
+    `;
+	  }).join("");
 
   list.querySelectorAll("[data-cp]").forEach(card => {
     const id = card.dataset.cp;
@@ -3583,12 +3836,18 @@ function renderCarePathsPanel() {
       setCarePathSelected(id, e.target.checked);
       renderCarePathsPanel();
     });
-    card.querySelector("[data-cp-label]").addEventListener("input", e => { cp.label = e.target.value; saveCarePaths(); });
+    card.querySelector("[data-cp-label]").addEventListener("input", e => {
+      if (isDefaultCarePathId(id)) return;
+      cp.label = e.target.value;
+      saveCarePaths();
+    });
     card.querySelector("[data-cp-aliases]").addEventListener("input", e => {
+      if (isDefaultCarePathId(id)) return;
       cp.aliases = uniqueCarePathAliases(e.target.value.split(","));
       saveCarePaths();
     });
     card.querySelector("[data-cp-delete]").addEventListener("click", () => {
+      if (isDefaultCarePathId(id)) return;
       if (!confirm(`Delete care path "${cp.label}"? Trials currently assigned to it will become unassigned.`)) return;
       state.carePaths = state.carePaths.filter(c => c.id !== id);
       setCarePathSelected(id, false);
@@ -3606,9 +3865,12 @@ function updateCarePathMergeControls() {
   if (!btn) return;
   const ids = selectedCarePathIds();
   const target = state.carePaths.find(cp => cp.id === ids[0]);
-  btn.disabled = ids.length < 2 || state.carePathDetecting;
+  const wouldRemoveBuiltin = ids.slice(1).some(isDefaultCarePathId);
+  btn.disabled = ids.length < 2 || state.carePathDetecting || wouldRemoveBuiltin;
   btn.textContent = ids.length > 1 ? `Merge selected (${ids.length})` : "Merge selected";
-  btn.title = ids.length > 1 && target
+  btn.title = wouldRemoveBuiltin
+    ? "Cross-Care Path is built in. Select it first if you want to merge another care path into it."
+    : ids.length > 1 && target
     ? `Merge ${ids.length - 1} selected care path(s) into "${target.label}".`
     : "Select two or more care paths to merge.";
 }
@@ -4509,7 +4771,10 @@ function toV1Envelope(trials, workspace = null) {
 // The normalized care-path enum (id, label, aliases) active at export time.
 // Round-trips so re-importing restores the buckets and their aliases.
 function tsv1CarePathCatalog() {
-  return (state.carePaths || []).map(normalizeCarePathEntry).filter(Boolean).map(cp => ({
+  return dedupeCarePathEntries([
+    ...defaultCarePathEntries(),
+    ...(state.carePaths || []).map(normalizeCarePathEntry).filter(Boolean).map(canonicalizeCarePathEntry),
+  ]).map(cp => ({
     id: cp.id,
     label: cp.label,
     aliases: cp.aliases,
@@ -4602,7 +4867,7 @@ function fromV1Envelope(parsed) {
   // survive editing a previously exported file.
   if (Array.isArray(parsed.care_path_catalog) && parsed.care_path_catalog.length) {
     const byId = Object.fromEntries(state.carePaths.map(c => [c.id, c]));
-    parsed.care_path_catalog.map(cp => normalizeCarePathEntry({ ...cp, _normalized: true })).filter(Boolean).forEach(cp => {
+    parsed.care_path_catalog.map(cp => normalizeCarePathEntry({ ...cp, _normalized: true })).filter(Boolean).map(canonicalizeCarePathEntry).forEach(cp => {
       if (byId[cp.id]) {
         byId[cp.id].label = cp.label || byId[cp.id].label;
         byId[cp.id].aliases = uniqueCarePathAliases([...(byId[cp.id].aliases || []), ...(cp.aliases || [])]);
@@ -4613,6 +4878,8 @@ function fromV1Envelope(parsed) {
       }
     });
     state.carePaths = Object.values(byId);
+  }
+  if (ensureDefaultCarePaths() || (Array.isArray(parsed.care_path_catalog) && parsed.care_path_catalog.length)) {
     saveCarePaths();
     renderCarePathsPanel();
   }
@@ -4654,20 +4921,67 @@ function applyTrialFilters() {
   if (!search || !filter) return;
   const q = search.value.trim().toLowerCase();
   const f = filter.value;
+  const showOnlyArchived = f === "archived";
+  let anyArchivedVisible = false;
   document.querySelectorAll("#trialsList details, #archivedTrialsList details").forEach(el => {
     const idx = +el.dataset.idx;
     const it = trialItems[idx];
     if (!it) return;
     const text = `${it.preview.id} ${it.preview.title} ${it.preview.meta||""}`.toLowerCase();
     const okQ = !q || text.includes(q);
-    const okF = !f || it.status === f;
-    el.style.display = (okQ && okF) ? "" : "none";
+    const okF = showOnlyArchived ? it.archived : (!f || it.status === f);
+    const visible = okQ && okF;
+    el.style.display = visible ? "" : "none";
+    if (visible && it.archived) anyArchivedVisible = true;
   });
+  // Auto-expand the archived section when a search or archived filter reveals matches there.
+  const archivedDetails = document.querySelector("#trialsSection > details");
+  if (archivedDetails && anyArchivedVisible && (q || showOnlyArchived)) {
+    archivedDetails.open = true;
+  }
+}
+
+function archiveAll() {
+  const q = (document.getElementById("searchInput")?.value || "").trim().toLowerCase();
+  let changed = false;
+  trialItems.forEach(it => {
+    if (it.archived) return;
+    if (q) {
+      const text = `${it.preview.id} ${it.preview.title} ${it.preview.meta||""}`.toLowerCase();
+      if (!text.includes(q)) return;
+    }
+    it.archived = true;
+    setArchivedTrialId(trialItemId(it), true);
+    changed = true;
+  });
+  if (changed) { renderTrials(trialItems.slice()); updateStats(trialItems); }
+}
+
+function restoreAll() {
+  const q = (document.getElementById("searchInput")?.value || "").trim().toLowerCase();
+  let changed = false;
+  trialItems.forEach(it => {
+    if (!it.archived) return;
+    if (q) {
+      const text = `${it.preview.id} ${it.preview.title} ${it.preview.meta||""}`.toLowerCase();
+      if (!text.includes(q)) return;
+    }
+    it.archived = false;
+    setArchivedTrialId(trialItemId(it), false);
+    changed = true;
+  });
+  if (changed) { renderTrials(trialItems.slice()); updateStats(trialItems); }
 }
 
 function bindFilters() {
   document.getElementById("searchInput")?.addEventListener("input", applyTrialFilters);
   document.getElementById("filterStatus")?.addEventListener("change", applyTrialFilters);
+  document.getElementById("archiveAllBtn")?.addEventListener("click", archiveAll);
+  document.getElementById("restoreAllBtn")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    restoreAll();
+  });
 }
 
 document.addEventListener("DOMContentLoaded", () => {
