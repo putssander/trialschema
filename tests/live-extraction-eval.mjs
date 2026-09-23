@@ -28,6 +28,16 @@ const fixtures = [
     },
     expectations: [
       {
+        id: "chemotherapy five-year lookback",
+        source: "Eerdere chemotherapie in de afgelopen 5 jaar",
+        timing: { scope: "window", lookback: { value: 5, unit: "years", code: "a" } },
+      },
+      {
+        id: "prior radiotherapy means any history",
+        source: "Eerdere craniele radiotherapie",
+        timing: { scope: "ever" },
+      },
+      {
         id: "strict age > 18",
         source: "Leeftijd >18 jaar",
         type: "inclusion",
@@ -136,6 +146,7 @@ const fixtures = [
         type: "inclusion",
         quantitative: { metric: /PSMA.*scan.*age|PSMA scan/i, operator: "<=", value: 60, unit: /days?/i },
         text: [/PSMA/i, /60 days/i],
+        timing: { scope: "window", lookback: { value: 60, unit: "days", code: "d" } },
       },
       {
         id: "no metastases keeps absent assertion",
@@ -157,6 +168,26 @@ const fixtures = [
         type: "inclusion",
         quantitative: { metric: /age/i, operator: "between", value: 18, upper_value: 80, unit: /years?/i },
       },
+    ],
+  },
+  {
+    trial: "SYNTHETIC_TIMING_01",
+    row: {
+      trial: "SYNTHETIC_TIMING_01",
+      inclusion: "Creatinine clearance >= 50 mL/min within 14 days before screening\nGeen myocardinfarct in de voorgeschiedenis\nECOG <= 2",
+      exclusion: "Actieve infectie bij screening\nChemotherapy within 4 weeks before treatment start",
+    },
+    expectations: [
+      {
+        id: "lab threshold plus independent recency",
+        source: "Creatinine clearance >= 50 mL/min within 14 days before screening",
+        quantitative: { metric: /creatinine/i, operator: ">=", value: 50, unit: /mL\/min/i },
+        timing: { scope: "window", lookback: { value: 14, unit: "days", code: "d" } },
+      },
+      { id: "negated history", source: "Geen myocardinfarct in de voorgeschiedenis", assertion: "absent", timing: { scope: "ever" } },
+      { id: "explicit current state", source: "Actieve infectie bij screening", timing: { scope: "current" } },
+      { id: "unspecified stays unspecified", source: "ECOG <= 2", timing: null },
+      { id: "do not change treatment-start anchor", source: "Chemotherapy within 4 weeks before treatment start", timing: null },
     ],
   },
 ];
@@ -216,6 +247,14 @@ function checkExpectation(criteria, expectation) {
   if (!c) return [`missing criterion: ${expectation.source}`];
   if (expectation.type && c.type !== expectation.type) failures.push(`type expected ${expectation.type}, got ${c.type}`);
   if (expectation.assertion && c.assertion !== expectation.assertion) failures.push(`assertion expected ${expectation.assertion}, got ${c.assertion || "(missing)"}`);
+  if (expectation.timing === null && c.timing !== undefined) failures.push("timing should be omitted");
+  if (expectation.timing) {
+    const expected = expectation.timing;
+    if (c.timing?.scope !== expected.scope) failures.push(`timing scope expected ${expected.scope}, got ${c.timing?.scope}`);
+    for (const [key, value] of Object.entries(expected.lookback || {})) {
+      if (c.timing?.lookback?.[key] !== value) failures.push(`lookback.${key} expected ${value}, got ${c.timing?.lookback?.[key]}`);
+    }
+  }
   if (expectation.text) {
     const hay = criterionHaystack(c);
     for (const rx of expectation.text) {

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://trialschema.org/v1/export.schema.json",
   "title": "TrialSchema Export",
-  "description": "A portable, agent-friendly representation of clinical-trial eligibility designed for automated patient matching. TrialSchema makes explicit what to check (criteria concepts and assertions), where to look (document types, default visit order, and criterion-level routing), how to evaluate (constraints, thresholds, polarity, rank, and fallbacks), and which normalized care path a trial belongs to (care_path_ids). Domain-neutral (oncology, cardiology, metabolic, rare disease, ...) and standards-aligned: a deliberate subset of HL7 FHIR R5 ResearchStudy with eligibility-focused additions, FHIR-shaped Codings, UCUM units, and an explicit user-defined document routing profile. Free-text fallbacks remain valid everywhere so end users never have to hand-curate ontology codes.",
+  "description": "A portable, agent-friendly representation of clinical-trial eligibility designed for automated patient matching. TrialSchema makes explicit what to check (criteria concepts and assertions), where to look (document types, default visit order, and criterion-level routing), how to evaluate (constraints, thresholds, polarity, rank, and fallbacks), when evidence counts (optional criterion timing), and which normalized care path a trial belongs to (care_path_ids). Domain-neutral (oncology, cardiology, metabolic, rare disease, ...) and standards-aligned: a deliberate subset of HL7 FHIR R5 ResearchStudy with eligibility-focused additions, FHIR-shaped Codings, UCUM units, and an explicit user-defined document routing profile. Free-text fallbacks remain valid everywhere so end users never have to hand-curate ontology codes.",
   "type": "object",
   "required": ["format", "format_version", "generated_at", "routing_profile", "trials"],
   "additionalProperties": false,
@@ -200,6 +200,7 @@
         },
 
         "constraint":  { "$ref": "#/$defs/Constraint" },
+        "timing": { "$ref": "#/$defs/Timing", "description": "Optional since v1.1. Which part of the patient's history counts as evidence. Omission means unspecified, not current." },
 
         "routing":   { "$ref": "#/$defs/Routing" },
         "guidance":  { "type": "string", "description": "Free-text guidance for the matching agent when source_text, clarified_text, concept, assertion, constraint, and routing are not enough. Strongly recommended when the routing includes \"other\"." },
@@ -207,6 +208,41 @@
         "provenance": { "$ref": "#/$defs/Provenance" },
         "extensions": { "$ref": "#/$defs/Extensions" }
       }
+    },
+
+    "Timing": {
+      "type": "object",
+      "required": ["scope"],
+      "additionalProperties": false,
+      "description": "Evidence timing, independent of assertion, constraint, and document routing. All windows count back from screening. Use clinical event/measurement dates, not merely the date of the document mentioning them. If omitted, consumers must interpret the criterion text; they must not assume current-only evidence.",
+      "properties": {
+        "scope": { "type": "string", "enum": ["current", "ever", "window"], "description": "current: state at screening; ever: any time in the patient's history up to screening; window: within lookback before screening. A recent document may describe historical evidence." },
+        "lookback": { "$ref": "#/$defs/Lookback" },
+        "description": { "type": "string", "description": "Original timing wording, optionally in the source language. Preserve boundary details here and in criterion text. Do not encode other anchors, future intervals, minimum washouts, or complex timelines as a simple lookback." }
+      },
+      "if": { "properties": { "scope": { "const": "window" } }, "required": ["scope"] },
+      "then": { "required": ["lookback"] },
+      "else": { "not": { "required": ["lookback"] } }
+    },
+
+    "Lookback": {
+      "type": "object",
+      "required": ["value", "unit", "code"],
+      "additionalProperties": false,
+      "description": "Positive duration before screening, using UCUM time units. Do not convert calendar months/years into an assumed number of days.",
+      "properties": {
+        "value": { "type": "number", "exclusiveMinimum": 0 },
+        "unit": { "type": "string", "enum": ["hours", "days", "weeks", "months", "years"] },
+        "code": { "type": "string", "enum": ["h", "d", "wk", "mo", "a"] },
+        "system": { "const": "http://unitsofmeasure.org" }
+      },
+      "oneOf": [
+        { "properties": { "unit": { "const": "hours" }, "code": { "const": "h" } } },
+        { "properties": { "unit": { "const": "days" }, "code": { "const": "d" } } },
+        { "properties": { "unit": { "const": "weeks" }, "code": { "const": "wk" } } },
+        { "properties": { "unit": { "const": "months" }, "code": { "const": "mo" } } },
+        { "properties": { "unit": { "const": "years" }, "code": { "const": "a" } } }
+      ]
     },
 
     "Concept": {

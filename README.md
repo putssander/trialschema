@@ -4,11 +4,12 @@ TrialSchema is a static, browser-only BYOK app for turning clinical-trial eligib
 
 ## Schema Goal
 
-TrialSchema is designed to tell a matching agent four things clearly:
+TrialSchema is designed to tell a matching agent five things clearly:
 
 - What to check: each eligibility criterion is split into one patient-level rule with a clinical `concept`, source text, clarified text, and assertion polarity.
 - Where to look: `routing_profile` defines available document types, the default scan set, and the general visit order; each criterion can override that with `routing.primary` and `routing.fallback`.
 - How to evaluate: `constraint`, `assertion`, `rank`, and `enabled` tell the agent whether the rule is a comparison, range, code set, existence check, boolean, or LLM-judgement fallback.
+- When evidence counts: optional criterion `timing` distinguishes the current state at screening, any history, and an explicit lookback before screening. Missing timing means unspecified.
 - Which trials to consider first: `care_path_catalog` and trial-level `care_path_ids` provide normalized care paths, such as `breast_cancer` or `heart_failure`, for first-pass matching before criteria evaluation.
 - Care-path ids and labels are English even when source spreadsheet values are Dutch or otherwise local. Source values are kept as aliases. The built-in `cross_care_path` option covers broad values such as `Zorglijn overstijgend`; they should normalize to one cross-domain/cross-care-path bucket, not to every disease-specific care path.
 
@@ -78,6 +79,26 @@ Clarified: Participant's age at eligibility assessment must be strictly greater 
 Constraint: age > 18 years
 ```
 
+## Evidence Timing (v1.1)
+
+Criteria may include `timing`, independently of their clinical constraint and assertion:
+
+```json
+"timing": {
+  "scope": "window",
+  "lookback": { "value": 5, "unit": "years", "code": "a" },
+  "description": "in de afgelopen 5 jaar"
+}
+```
+
+`current` means the state at screening; `ever` means any history up to screening. Only `window` permits and requires `lookback`, with a positive numeric value and a matching unit/code pair: hours/h, days/d, weeks/wk, months/mo, years/a. `description` is optional and may retain Dutch source wording. Windows always count back from screening. Other anchors, future periods, minimum washouts, and complex timelines stay in the criterion text/guidance with timing omitted. Absence of timing means unspecified, never current by default. Evidence timing concerns the event/measurement date, not simply the document date; do not discard history sections.
+
+The extractor handles English and Dutch cues such as “history of”, “in de voorgeschiedenis”, “eerder”, “momenteel”, “in de afgelopen 5 jaar”, and “niet ouder dan 60 dagen”. Timing supplements the constraint: creatinine clearance ≥ 50 mL/min within 14 days keeps the laboratory threshold and adds a 14-day window.
+
+In **2 Clarify**, edit scope, lookback, and source wording, then **Save timing**. For existing trials, **Suggest timing** can use the selected LLM provider or a copied prompt and pasted JSON response. It fills only missing, unreviewed timing. Existing values and manual choices, including a saved “Unspecified”, are never overwritten; suggestions pending during text edits are skipped. Review applied suggestions before exporting. The manual-review flag is workspace state in the criterion's `extensions["org.trialschema.workspace"].timing_reviewed`, so it survives export/re-import.
+
+Exports now use `format_version: "1.1"`. Existing 1.0 exports remain valid against the updated schema at the same major-version URL. Strict validators pinned to the old schema need an update to accept the new optional field. TrialGPT's loader/matcher integration is a separate downstream change.
+
 ## Workspace Preservation
 
 Exports keep agent-facing data and UI workflow state separate:
@@ -96,11 +117,13 @@ Run the static prompt/schema regression checks:
 node tests/inactive-export.test.mjs
 node tests/workspace-roundtrip.test.mjs
 node tests/prompt-quality.test.mjs
+node tests/timing.test.mjs
+uv run --with jsonschema python tests/timing-schema.test.py
 node --check app.js
 git diff --check
 ```
 
-`tests/prompt-quality.test.mjs` checks that the extractor and rewrite prompts keep the matching-critical requirements from representative active trial criteria, including age thresholds, Karnofsky/WHO performance status, PSA thresholds, PSMA scan recency, and assertion polarity.
+`tests/prompt-quality.test.mjs` checks that the extractor and rewrite prompts keep the matching-critical requirements from representative active trial criteria, including age thresholds, Karnofsky/WHO performance status, PSA thresholds, PSMA scan recency, and assertion polarity. `tests/timing.test.mjs` checks timing validation, import/export, prompt rules, and protection of manual edits. `tests/timing-schema.test.py` validates actual exports and invalid timing cases against the JSON Schema.
 
 ## Optional Live OpenAI Eval
 
@@ -118,6 +141,7 @@ The live eval checks:
 - Extracted criteria preserve strict/inclusive thresholds.
 - Quantitative criteria produce the expected `structured_target`.
 - Negated criteria preserve `assertion`.
+- Timing preserves Dutch history cues, explicit current state, and independent laboratory recency, while omitting unsupported anchors and unspecified timing.
 - Sanitized output exports to a TrialSchema v1-shaped envelope.
 
 Use the live eval as the prompt optimization loop: run it, inspect failures, improve prompt/schema mapping, rerun.

@@ -37,7 +37,7 @@
         <img src="docs/brand/favicon.svg" alt="" class="w-9 h-9 rounded-xl shadow-sm" />
         <div class="leading-tight">
           <div class="text-lg font-extrabold tracking-tight" style="color:var(--ts-navy)">Trial<span style="color:var(--ts-teal)" class="group-hover:opacity-80">Schema</span></div>
-          <div class="text-[11px] uppercase tracking-wider text-slate-500">Format Reference · v1.0</div>
+          <div class="text-[11px] uppercase tracking-wider text-slate-500">Format Reference · v1.1</div>
         </div>
       </a>
       <a href="index.html" class="ml-auto inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600 hover:text-slate-900 px-2.5 py-1.5 rounded-lg hover:bg-slate-100">
@@ -60,6 +60,7 @@
         <a href="#trial"      class="block px-2 py-1 rounded hover:bg-slate-100 text-slate-700">5. Trial</a>
         <a href="#criterion"  class="block px-2 py-1 rounded hover:bg-slate-100 text-slate-700">6. Criterion</a>
         <a href="#constraint" class="block px-2 py-1 rounded hover:bg-slate-100 text-slate-700">7. Constraints</a>
+        <a href="#timing" class="block px-2 py-1 rounded hover:bg-slate-100 text-slate-700">6a. Evidence timing</a>
         <a href="#routing"    class="block px-2 py-1 rounded hover:bg-slate-100 text-slate-700">8. Routing</a>
         <a href="#carepath"   class="block px-2 py-1 rounded hover:bg-slate-100 text-slate-700">9. Care path</a>
         <a href="#example"    class="block px-2 py-1 rounded hover:bg-slate-100 text-slate-700">10. Full example</a>
@@ -73,7 +74,7 @@
     <main class="col-span-12 md:col-span-9 space-y-12">
 
       <section id="overview" class="anchor-target">
-        <h1 class="text-3xl font-extrabold tracking-tight text-slate-900">TrialSchema v1.0</h1>
+        <h1 class="text-3xl font-extrabold tracking-tight text-slate-900">TrialSchema v1.1</h1>
         <p class="mt-3 text-slate-700 leading-relaxed">
           TrialSchema is an open, portable representation of clinical-trial eligibility designed for
           <em>automated patient matching</em>. It captures the same information a clinician extracts when reading
@@ -88,6 +89,7 @@
           <div class="bg-white border border-slate-200 rounded-xl p-3"><b class="text-slate-900">What to check</b><br><span class="text-slate-600">Each criterion names the patient-level concept and assertion polarity.</span></div>
           <div class="bg-white border border-slate-200 rounded-xl p-3"><b class="text-slate-900">Where to look</b><br><span class="text-slate-600">Document types, visit order, and criterion routing direct the agent to the right record sources.</span></div>
           <div class="bg-white border border-slate-200 rounded-xl p-3"><b class="text-slate-900">How to evaluate</b><br><span class="text-slate-600">Constraints encode comparisons, ranges, code sets, boolean checks, existence checks, or text fallback.</span></div>
+          <div class="bg-white border border-slate-200 rounded-xl p-3"><b class="text-slate-900">When evidence counts</b><br><span class="text-slate-600">Optional timing distinguishes current state, any history, and lookback windows before screening.</span></div>
           <div class="bg-white border border-slate-200 rounded-xl p-3"><b class="text-slate-900">Which trials first</b><br><span class="text-slate-600">Care paths are normalized for first-pass trial filtering.</span></div>
         </div>
 
@@ -105,7 +107,7 @@
           <li><b>Domain-neutral.</b> Oncology, cardiology, metabolic, rare disease — the format makes no assumptions about specialty or treatment modality.</li>
           <li><b>Standards-aligned, not standards-bound.</b> Codings follow FHIR shape (<code>system</code>+<code>code</code>+<code>display</code>); units use UCUM. But every place that accepts a code also accepts plain text — <b>end users never have to map criteria to ontologies by hand</b>.</li>
           <li><b>Graceful degradation.</b> When a constraint cannot be machine-evaluated, the extractor emits <code>{"kind": "text", "description": …}</code>. The matcher always has the verbatim <code>source_text</code> as ultimate fallback.</li>
-          <li><b>Decoupled responsibilities.</b> A criterion's clinical concept says <em>what</em> to check, <code>constraint</code> and <code>assertion</code> say <em>how</em> to evaluate it, and <code>routing</code> says <em>where</em> to look.</li>
+          <li><b>Decoupled responsibilities.</b> A criterion's clinical concept says <em>what</em> to check, <code>constraint</code> and <code>assertion</code> say <em>how</em> to evaluate it, <code>routing</code> says <em>where</em> to look, and optional <code>timing</code> says <em>when</em> evidence counts.</li>
           <li><b>Human-in-the-loop friendly.</b> Every criterion has an <code>enabled</code> toggle, a <code>rank</code>, an editable <code>clarified_text</code>, and free-text <code>guidance</code>.</li>
           <li><b>Minimal surface.</b> Every field earns its place. Extension data goes in namespaced <code>extensions</code> bags.</li>
         </ul>
@@ -116,9 +118,9 @@
         <p class="mt-2 text-sm text-slate-600">The top-level document.</p>
 <pre class="mt-3 bg-white border border-slate-200 rounded-xl p-4 text-[12.5px] overflow-x-auto"><span class="b">{</span>
   <span class="k">"format"</span>:         <span class="s">"trialschema"</span>,
-  <span class="k">"format_version"</span>: <span class="s">"1.0"</span>,
+  <span class="k">"format_version"</span>: <span class="s">"1.1"</span>,
   <span class="k">"generated_at"</span>:   <span class="s">"2026-05-21T12:00:00Z"</span>,
-  <span class="k">"generator"</span>:      <span class="b">{</span> <span class="k">"name"</span>: <span class="s">"trialschema-ui"</span>, <span class="k">"version"</span>: <span class="s">"1.0.0"</span> <span class="b">}</span>,
+  <span class="k">"generator"</span>:      <span class="b">{</span> <span class="k">"name"</span>: <span class="s">"trialschema-ui"</span>, <span class="k">"version"</span>: <span class="s">"1.1.0"</span> <span class="b">}</span>,
   <span class="k">"routing_profile"</span>: <span class="b">{</span> <span class="c">/* document types + default scan set + visit order */</span> <span class="b">}</span>,
   <span class="k">"care_path_catalog"</span>: <span class="b">[</span> <span class="c">/* normalized care paths */</span> <span class="b">]</span>,
   <span class="k">"trial_count"</span>:    <span class="n">1</span>,
@@ -188,7 +190,7 @@
 
       <section id="criterion" class="anchor-target">
         <h2 class="text-xl font-bold text-slate-900">6. Criterion</h2>
-        <p class="mt-2 text-sm text-slate-600">A single patient-level eligibility rule. The shape decouples <em>what</em> the criterion is about (<code>concept</code>), <em>how</em> to evaluate it (<code>constraint</code>, <code>assertion</code>), and <em>where</em> to look (<code>routing</code>). The raw source text remains available for audit, while <code>clarified_text</code> can carry the more explicit agent-facing rewrite.</p>
+        <p class="mt-2 text-sm text-slate-600">A single patient-level eligibility rule. The shape decouples <em>what</em> the criterion is about (<code>concept</code>), <em>how</em> to evaluate it (<code>constraint</code>, <code>assertion</code>), <em>where</em> to look (<code>routing</code>), and <em>when</em> evidence counts (<code>timing</code>). The raw source text remains available for audit, while <code>clarified_text</code> can carry the more explicit agent-facing rewrite.</p>
 <pre class="mt-3 bg-white border border-slate-200 rounded-xl p-4 text-[12.5px] overflow-x-auto"><span class="b">{</span>
   <span class="k">"id"</span>:             <span class="s">"INC-03"</span>,
   <span class="k">"kind"</span>:           <span class="s">"inclusion"</span>,           <span class="c">// inclusion | exclusion</span>
@@ -211,6 +213,11 @@
     <span class="k">"quantity"</span>: <span class="b">{</span> <span class="k">"value"</span>: <span class="n">50</span>, <span class="k">"unit"</span>: <span class="s">"mL/min"</span>, <span class="k">"system"</span>: <span class="s">"http://unitsofmeasure.org"</span>, <span class="k">"code"</span>: <span class="s">"mL/min"</span> <span class="b">}</span>
   <span class="b">}</span>,
 
+  <span class="k">"timing"</span>: <span class="b">{</span>
+    <span class="k">"scope"</span>: <span class="s">"window"</span>,
+    <span class="k">"lookback"</span>: <span class="b">{</span> <span class="k">"value"</span>: <span class="n">14</span>, <span class="k">"unit"</span>: <span class="s">"days"</span>, <span class="k">"code"</span>: <span class="s">"d"</span> <span class="b">}</span>,
+    <span class="k">"description"</span>: <span class="s">"within 14 days of screening"</span>
+  <span class="b">}</span>,
   <span class="k">"routing"</span>:  <span class="b">{</span> <span class="k">"primary"</span>: <span class="b">[</span><span class="s">"core-lab"</span>, <span class="s">"intake-notes"</span>, <span class="s">"mdt-notes"</span><span class="b">]</span>, <span class="k">"fallback"</span>: <span class="b">[]</span> <span class="b">}</span>,
   <span class="k">"guidance"</span>: <span class="s">""</span>,
 
@@ -231,6 +238,25 @@
           <div class="bg-white border border-slate-200 rounded-lg p-2"><code>logistic</code> <span class="text-slate-500">— travel, language, etc.</span></div>
           <div class="bg-white border border-slate-200 rounded-lg p-2"><code>other</code> <span class="text-slate-500">— anything else</span></div>
         </div>
+
+        <h3 id="timing" class="mt-5 font-semibold text-slate-800 anchor-target">Evidence timing (optional, since v1.1)</h3>
+        <p class="text-sm text-slate-600">Timing tells the matcher which part of the patient's history counts as evidence, independently of assertion, constraint, and routing. Missing timing means <b>unspecified</b>; consumers must interpret the criterion text rather than assume current-only evidence.</p>
+        <table class="mt-3 w-full text-[13px]">
+          <thead><tr><th>Scope</th><th>Meaning</th><th>Lookback</th></tr></thead>
+          <tbody>
+            <tr><td><code>current</code></td><td>State at screening (e.g. active infection).</td><td>Forbidden</td></tr>
+            <tr><td><code>ever</code></td><td>Any history up to screening (e.g. prior myocardial infarction).</td><td>Forbidden</td></tr>
+            <tr><td><code>window</code></td><td>Evidence within a lookback before screening.</td><td>Required; positive numeric value</td></tr>
+          </tbody>
+        </table>
+        <pre class="mt-3 bg-white border border-slate-200 rounded-xl p-4 text-[12.5px] overflow-x-auto">"timing": {
+  "scope": "window",
+  "lookback": { "value": 5, "unit": "years", "code": "a" },
+  "description": "in de afgelopen 5 jaar"
+}</pre>
+        <p class="mt-2 text-sm text-slate-600"><code>scope</code> is required. Optional <code>description</code> preserves the source timing phrase, including Dutch wording and boundary details. For a window, <code>lookback.value</code>, <code>unit</code>, and <code>code</code> are required. Unit/code pairs are hours/h, days/d, weeks/wk, months/mo, and years/a. Optional <code>system</code> must be <code>http://unitsofmeasure.org</code>. Other fields are rejected. Keep months and years in their stated units instead of converting to an assumed number of days.</p>
+        <p class="mt-2 text-sm text-slate-600">All windows count back from screening; there is no anchor field. Other anchors, future intervals, minimum washouts, and mixed timelines remain in criterion text/guidance with timing omitted. A maximum lookback does not encode “at least 4 weeks since chemotherapy.” No new constraint kinds are introduced.</p>
+        <p class="mt-2 text-sm text-slate-600">Use the clinical event or measurement date, not just the document date. A recent note may describe an old event; history sections remain relevant. Timing does not change assertion polarity: “no history of” uses <code>ever</code> with <code>absent</code>. A lab threshold remains in <code>constraint</code> while its recency belongs in <code>timing</code>.</p>
 
         <h3 class="mt-5 font-semibold text-slate-800">Assertion</h3>
         <p class="text-sm text-slate-600"><code>present</code> — the patient must satisfy the constraint. <code>absent</code> — the patient must NOT satisfy it (e.g. "no history of"). <code>unknown</code> — no assertion. Combining this with <code>kind: "exclusion"</code> + <code>assertion: "present"</code> reads naturally as "patient must NOT have …".</p>
@@ -339,7 +365,7 @@
       <section id="example" class="anchor-target">
         <h2 class="text-xl font-bold text-slate-900">10. Full example</h2>
 <pre class="mt-3 bg-white border border-slate-200 rounded-xl p-4 text-[12.5px] overflow-x-auto"><span class="b">{</span>
-  <span class="k">"format"</span>: <span class="s">"trialschema"</span>, <span class="k">"format_version"</span>: <span class="s">"1.0"</span>,
+  <span class="k">"format"</span>: <span class="s">"trialschema"</span>, <span class="k">"format_version"</span>: <span class="s">"1.1"</span>,
   <span class="k">"generated_at"</span>: <span class="s">"2026-05-21T12:00:00Z"</span>,
   <span class="k">"routing_profile"</span>: <span class="b">{</span>
     <span class="k">"id"</span>: <span class="s">"default-clinical"</span>,
@@ -451,7 +477,7 @@ protocolSection.eligibilityModule.eligibilityCriteria <span class="c">→</span>
       <section id="versioning" class="anchor-target">
         <h2 class="text-xl font-bold text-slate-900">13. Versioning</h2>
         <p class="mt-2 text-sm text-slate-700">
-          <code>format_version</code> uses <code>MAJOR.MINOR</code>. Minor versions are strictly additive (new optional fields, new enum members marked as such). Major versions may make breaking changes; this is <code>1.0</code>, the inaugural release. There is no prior version to be compatible with.
+          <code>format_version</code> uses <code>MAJOR.MINOR</code>. Minor versions are strictly additive (new optional fields, new enum members marked as such). Major versions may make breaking changes; this is <code>1.1</code>, adding optional criterion <code>timing</code>. Existing 1.0 exports remain valid against the updated schema. The major-version schema URL stays unchanged. Older strict 1.0 validators need the updated schema to accept timing; old consumers must ignore unknown optional fields.
         </p>
         <p class="mt-2 text-sm text-slate-700">
           Implementers SHOULD reject documents with an unknown <code>format</code> value or with a <code>format_version</code> whose <code>MAJOR</code> they do not understand. They SHOULD ignore unknown fields within a known major version.

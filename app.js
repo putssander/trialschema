@@ -1232,6 +1232,56 @@ function carePathPromptBlock() {
   ].join("\n");
 }
 
+const TIMING_UNITS = Object.freeze({ hours: "h", days: "d", weeks: "wk", months: "mo", years: "a" });
+
+// Optional criterion.timing uses the same shape internally and on the wire.
+// Reject malformed values instead of silently discarding clinical meaning.
+function validateTiming(timing) {
+  if (timing === undefined) return undefined;
+  const fail = () => { throw new Error("Invalid timing: use current/ever without lookback, or window with a positive duration and matching unit/code."); };
+  if (!timing || typeof timing !== "object" || Array.isArray(timing)) return fail();
+  if (Object.keys(timing).some(k => !["scope", "lookback", "description"].includes(k))) return fail();
+  if (!["current", "ever", "window"].includes(timing.scope)) return fail();
+  if ("description" in timing && typeof timing.description !== "string") return fail();
+  if (timing.scope === "window") {
+    const q = timing.lookback;
+    if (!q || typeof q !== "object" || Array.isArray(q)) return fail();
+    if (Object.keys(q).some(k => !["value", "unit", "code", "system"].includes(k))) return fail();
+    if (typeof q.value !== "number" || !Number.isFinite(q.value) || q.value <= 0) return fail();
+    if (!Object.hasOwn(TIMING_UNITS, q.unit) || TIMING_UNITS[q.unit] !== q.code) return fail();
+    if ("system" in q && q.system !== "http://unitsofmeasure.org") return fail();
+  } else if ("lookback" in timing) return fail();
+  return deepClone(timing);
+}
+
+function timingPromptRules() {
+  return `EVIDENCE TIMING (optional criterion field, TrialSchema v1.1).
+Set timing only when supported by the source, independently of assertion and routing:
+- current: a state explicitly required at screening, e.g. "currently", "active",
+  "huidig", "momenteel", "actieve infectie". Do not infer current just from a lab or diagnosis category.
+- ever: any history up to screening, e.g. "history of", "prior", "previous",
+  "ever", "in de voorgeschiedenis", "eerder", "ooit", "doorgemaakt".
+- window: an explicit maximum lookback before screening, e.g. "within 14 days
+  before screening", "in de afgelopen 5 jaar", "niet ouder dan 60 dagen".
+  Include lookback: {value: positive number, unit: hours|days|weeks|months|years,
+  code: h|d|wk|mo|a} with matching unit/code. Only window allows/requires lookback.
+Preserve the source timing phrase in timing.description (Dutch is allowed).
+Prefer verbatim source text over any timing inferred or added by an earlier rewrite.
+Examples:
+  "Eerdere chemotherapie in de afgelopen 5 jaar" -> {"scope":"window","lookback":{"value":5,"unit":"years","code":"a"},"description":"in de afgelopen 5 jaar"}.
+  "Geen myocardinfarct in de voorgeschiedenis" -> {"scope":"ever","description":"in de voorgeschiedenis"}; preserve assertion absent.
+  "Creatinine clearance >= 50 mL/min within 14 days before screening" -> timing
+  window 14 days (d), while structured_target remains creatinine clearance >= 50 mL/min.
+Missing timing means unspecified, never default current. Omit timing for ambiguous
+or mixed timelines, future intervals, minimum washouts (e.g. at least 4 weeks since
+chemotherapy), and windows anchored to surgery, treatment start, enrollment or another
+event instead of screening. Preserve those details in criterion text/guidance.
+No separate anchor field and no new constraint kinds. A timing window supplements
+the clinical constraint; it must not replace a lab threshold or change polarity.
+Evidence dates refer to the clinical event/measurement, not merely a document date.
+Keep history sections eligible as evidence: a recent note can describe an old event.`;
+}
+
 function buildSystemPrompt() {
   const docIds = currentDocIds();
   const scanIds = defaultScanDocIds();
@@ -1330,10 +1380,13 @@ Examples from active trial rows:
     an available PSMA scan performed no more than 60 days before eligibility assessment;
     metric "PSMA scan age", operator "<=", value 60, unit "days".
 
+RULE 2C - EVIDENCE TIMING.
+${timingPromptRules()}
+
 RULE 3 - CROSS-LINGUAL TRANSLATION & STANDARDIZATION.
 If the input contains any non-English clinical text, interpret it natively but translate
 agent-facing output strings (criteria text, conditions, descriptions) cleanly into
-English. Preserve clinical precision. Keep original_text_raw in the source language.
+English. Preserve clinical precision. Keep original_text_raw and timing.description in the source language.
 
 RULE 4 - MATCHING WINDOW DATE NORMALIZATION.
 lifecycle_dates.start_date and lifecycle_dates.completion_date represent the trial's
@@ -1378,7 +1431,7 @@ criterion merely because a condition or drug appears in the title, condition lis
 hint. Create a criterion only when the eligibility text says a patient must have, must not have, must
 previously have received, or must avoid that condition/intervention.
 
-OUTPUT SHAPE - return EXACTLY this JSON structure (no extra keys, no commentary):
+OUTPUT SHAPE - return this JSON structure (no commentary); add optional timing per the evidence timing rules:
 {
   "trial_id": "string",
   "enabled": true,
@@ -1946,6 +1999,8 @@ function sanitizeCriterion(c, i) {
     original_text: String(c.original_text || ""),
     original_text_raw: typeof c.original_text_raw === "string" ? c.original_text_raw : "",
     assertion: ["present", "absent", "unknown"].includes(c.assertion) ? c.assertion : "present",
+    ...(c.timing !== undefined ? { timing: validateTiming(c.timing) } : {}),
+    timing_reviewed: c.timing_reviewed === true,
     category,
     priority_level: prio,
     status: c.status === "inactive" ? "inactive" : "active",
@@ -3021,7 +3076,18 @@ function renderBody(host, it, i) {
             ${criteriaStepButtonsHtml()}
           </div>
           <div class="text-[11px] text-slate-500">${criteriaSummary}</div>
+          <button type="button" data-timing-suggest class="text-[11px] font-semibold text-blue-700 hover:underline">Suggest timing</button>
         </div>
+      </div>
+      <div data-timing-suggestions class="hidden border-b border-slate-100 p-4 space-y-2">
+        <p class="text-xs text-slate-600">Suggest timing for missing, unreviewed criteria. Existing timing and manual choices are preserved. Review the results in Clarify.</p>
+        <div class="flex flex-wrap gap-3 text-xs text-blue-700">
+          <button type="button" data-timing-run>Suggest with LLM</button>
+          <button type="button" data-timing-copy>Copy prompt</button>
+          <button type="button" data-timing-apply>Apply pasted suggestions</button>
+        </div>
+        <textarea data-timing-response aria-label="Timing suggestions JSON" rows="3" placeholder="Paste returned JSON here" class="w-full rounded border border-slate-200 p-2 text-xs"></textarea>
+        <p data-timing-status role="status" class="text-xs text-slate-600"></p>
       </div>
       <div class="px-3 py-3 space-y-2 bg-slate-50/40" data-criteria></div>
     </div>
@@ -3041,6 +3107,7 @@ function renderBody(host, it, i) {
     });
   });
   bindMetadataInputs(host, t);
+  bindTimingSuggestions(host, t, () => renderBody(host, it, i));
   if (!hasLLM) bindManualPanel(host, it, i);
 }
 
@@ -3951,6 +4018,124 @@ async function expandStagesForCriterion(criterion, stageMatch, host, trial) {
   }
 }
 
+function timingSuggestionSnapshot(trial) {
+  return (trial.criteria || []).filter(c => c.timing === undefined && !c.timing_reviewed)
+    .map(c => ({ criterion: c, id: c.criterion_id, text: c.original_text, raw: c.original_text_raw }));
+}
+
+function buildTimingSuggestionPrompt(snapshot) {
+  const system = `Suggest only evidence timing for the supplied existing criteria. Do not rewrite criteria or change constraints, assertions, or routing.
+${timingPromptRules()}
+Return STRICT JSON: {"criteria":[{"criterion_id":"INC-01","timing":{"scope":"ever","description":"history of"}}]}.
+Use only supplied criterion_id values, once each. Omit criteria whose timing is unclear; an empty criteria array is valid.`;
+  const user = JSON.stringify(snapshot.map(s => ({ criterion_id: s.id, source_text: s.raw || s.text, clarified_text: s.text })));
+  return { system, user, manual: formatPromptForManualLLM(system, user) };
+}
+
+function applyTimingSuggestions(trial, snapshot, response) {
+  if (!response || !Array.isArray(response.criteria)) throw new Error('Expected {"criteria": [...]} timing suggestions.');
+  const seen = new Set();
+  // Validate the whole response before mutating any criterion.
+  const suggestions = response.criteria.map(s => {
+    if (!s || seen.has(s.criterion_id)) throw new Error("Invalid or duplicate timing suggestion.");
+    seen.add(s.criterion_id);
+    const matches = snapshot.filter(item => item.id === s.criterion_id);
+    if (matches.length !== 1 || s.timing === undefined) throw new Error("Unknown/ambiguous criterion or missing timing in suggestion.");
+    return { saved: matches[0], timing: validateTiming(s.timing) };
+  });
+  let applied = 0;
+  for (const { saved, timing } of suggestions) {
+    const c = saved.criterion;
+    // Guard against edits, removals, or replacement while the model/paste is pending.
+    if (!trial.criteria.includes(c) || c.criterion_id !== saved.id || c.timing !== undefined || c.timing_reviewed
+      || c.original_text !== saved.text || c.original_text_raw !== saved.raw) continue;
+    c.timing = timing;
+    applied++;
+  }
+  return applied;
+}
+
+function bindTimingSuggestions(host, trial, rerender) {
+  const panel = host.querySelector("[data-timing-suggestions]");
+  const status = host.querySelector("[data-timing-status]");
+  let snapshot = null;
+  host.querySelector("[data-timing-suggest]").addEventListener("click", () => {
+    panel.classList.toggle("hidden");
+    if (!panel.classList.contains("hidden") && !snapshot) snapshot = timingSuggestionSnapshot(trial);
+  });
+  const prepare = () => {
+    snapshot = timingSuggestionSnapshot(trial);
+    if (!snapshot.length) throw new Error("No missing, unreviewed timing to suggest.");
+    return buildTimingSuggestionPrompt(snapshot);
+  };
+  const apply = (response, saved, by) => {
+    const count = applyTimingSuggestions(trial, saved, response);
+    if (count) {
+      markTrialAI(trial, by);
+      state.criteriaStep = "clarify";
+      rerender();
+      host.querySelector("[data-timing-suggestions]").classList.remove("hidden");
+    }
+    host.querySelector("[data-timing-status]").textContent = `${count} timing suggestions applied. Existing or edited criteria were preserved; unclear timing may remain unspecified.`;
+  };
+  host.querySelector("[data-timing-copy]").addEventListener("click", async () => {
+    try {
+      const prompt = prepare();
+      status.textContent = await copyToClipboard(prompt.manual) ? "Prompt copied. Paste the JSON response, then apply." : "Could not copy prompt.";
+    } catch (e) { status.textContent = e.message; }
+  });
+  host.querySelector("[data-timing-apply]").addEventListener("click", () => {
+    try {
+      if (!snapshot) throw new Error("Copy a timing prompt first.");
+      apply(parseModelJson(host.querySelector("[data-timing-response]").value), snapshot, "manual-llm-timing");
+    } catch (e) { status.textContent = e.message; }
+  });
+  host.querySelector("[data-timing-run]").addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    try {
+      if (!hasLLMCredentials()) throw new Error(missingCredentialText());
+      const prompt = prepare();
+      const saved = snapshot;
+      const by = activeAIByline();
+      button.disabled = true;
+      status.textContent = "Suggesting timing…";
+      const response = await callLLMJson({ system: prompt.system, user: prompt.user });
+      apply(response, saved, by);
+    } catch (e) { status.textContent = e.message; }
+    finally { button.disabled = false; }
+  });
+}
+
+function setCriterionTiming(trial, criterion, timing) {
+  const validated = validateTiming(timing);
+  if (validated === undefined) delete criterion.timing;
+  else criterion.timing = validated;
+  criterion.timing_reviewed = true;
+  markTrialEdited(trial);
+}
+
+function timingEditorHtml(c) {
+  const timing = c.timing;
+  return `<div class="mt-3 pt-3 border-t border-slate-100 space-y-2" data-timing-editor>
+    <div class="text-[11px] font-semibold text-slate-600">Evidence timing</div>
+    <div class="flex flex-wrap items-center gap-2 text-xs">
+      <label>Scope <select data-timing-scope class="rounded border border-slate-200 p-1.5">
+        ${[["", "Unspecified"], ["current", "Current at screening"], ["ever", "Any history"], ["window", "Before screening (window)"]].map(([value, label]) => `<option value="${value}" ${value === (timing?.scope || "") ? "selected" : ""}>${label}</option>`).join("")}
+      </select></label>
+      <div data-timing-window class="${timing?.scope === "window" ? "" : "hidden"}">
+        <label>Lookback <input data-timing-value type="number" min="0" step="any" value="${timing?.lookback?.value ?? ""}" class="w-20 rounded border border-slate-200 p-1.5"/></label>
+        <label>Unit <select data-timing-unit class="rounded border border-slate-200 p-1.5">
+          ${Object.keys(TIMING_UNITS).map(unit => `<option ${unit === (timing?.lookback?.unit || "days") ? "selected" : ""}>${unit}</option>`).join("")}
+        </select></label>
+      </div>
+      <button type="button" data-timing-save class="font-semibold text-blue-700">Save timing</button>
+    </div>
+    <label class="block text-xs text-slate-500">Timing wording <input data-timing-description value="${escapeHtml(timing?.description || "")}" placeholder="e.g. in de afgelopen 5 jaar" class="mt-1 w-full rounded border border-slate-200 p-1.5"/></label>
+    <p class="text-[11px] text-slate-500">Windows count back from screening. Unspecified keeps timing in the criterion text. Save your choice to protect it from suggestions.</p>
+    <p data-timing-error role="status" class="text-xs text-slate-600"></p>
+  </div>`;
+}
+
 function buildCriterionRow(trial, c, ci, mode = currentCriteriaStep()) {
   const step = CRITERIA_STEPS.some(s => s.id === mode) ? mode : currentCriteriaStep();
   const showClarify = step === "clarify";
@@ -4087,6 +4272,7 @@ function buildCriterionRow(trial, c, ci, mode = currentCriteriaStep()) {
           ${evalPill}
           ${codePill}
           ${statusSummary}
+          <span data-timing-summary class="text-[10px] text-slate-500">${escapeHtml(c.timing ? `Timing: ${c.timing.scope}${c.timing.lookback ? ` (${c.timing.lookback.value} ${c.timing.lookback.unit})` : ""}` : "Timing: unspecified")}</span>
         </div>
         <div data-text class="mt-2 ${showClarify || showDocs ? "text-[13px] leading-relaxed" : "text-[12px] leading-snug criteria-compact-text"} text-slate-800">${escapeHtml(c.original_text)}</div>
         <div data-original-line></div>
@@ -4101,8 +4287,29 @@ function buildCriterionRow(trial, c, ci, mode = currentCriteriaStep()) {
     </div>
 
     ${clarifyPanelHtml}
+    ${showClarify ? timingEditorHtml(c) : ""}
     ${routingStrip}
   `;
+
+  const timingScope = card.querySelector("[data-timing-scope]");
+  timingScope?.addEventListener("change", () => {
+    card.querySelector("[data-timing-window]").classList.toggle("hidden", timingScope.value !== "window");
+  });
+  card.querySelector("[data-timing-save]")?.addEventListener("click", () => {
+    const status = card.querySelector("[data-timing-error]");
+    try {
+      const scope = timingScope.value;
+      const description = card.querySelector("[data-timing-description]").value.trim();
+      const timing = scope ? { scope, ...(description ? { description } : {}) } : undefined;
+      if (scope === "window") {
+        const unit = card.querySelector("[data-timing-unit]").value;
+        timing.lookback = { value: Number(card.querySelector("[data-timing-value]").value), unit, code: TIMING_UNITS[unit] };
+      }
+      setCriterionTiming(trial, c, timing);
+      card.querySelector("[data-timing-summary]").textContent = timing ? `Timing: ${scope}${timing.lookback ? ` (${timing.lookback.value} ${timing.lookback.unit})` : ""}` : "Timing: unspecified";
+      status.textContent = "Timing saved.";
+    } catch (e) { status.textContent = e.message; }
+  });
 
   // ---------- Render the routing chips ----------
   const routingHost = card.querySelector("[data-routing]");
@@ -4321,7 +4528,8 @@ Rules:
 - Preserve quantitative operator strictness exactly: ">" stays strictly greater than, ">=" stays greater than or equal to, "<" stays strictly less than, "<=" stays less than or equal to.
 - If a boundary case matters, state it explicitly (e.g. "exactly 18 years old does not satisfy" for age > 18; "18 years old satisfies" for age >= 18).
 - Mirror the supplied structured_target when present: metric, operator, value, upper_value, and unit must match the wording.
-- Include the evaluation timepoint when present in the source or structured target context (e.g. at eligibility assessment, at enrollment, at inclusion, before eligibility assessment). If no timepoint is given, use "at eligibility assessment" for demographics/labs/performance status and do not invent protocol-specific dates.
+- Preserve supplied timing and its scope/lookback exactly; do not turn historical requirements into current-only checks.
+- Include the evaluation timepoint when present in the source, supplied timing, or structured target context (e.g. at eligibility assessment, at enrollment, at inclusion, before eligibility assessment). If no timepoint is given, leave it unspecified; do not invent a current-only requirement or protocol-specific dates.
 - Resolve abbreviations only when clinically safe and keep the abbreviation when useful (e.g. "WHO performance status", "PSMA scan", "HPV/p16").
 - For composite AND/OR criteria, keep all logical alternatives explicit; do not simplify away branches.
 - Keep it one sentence, or two short sentences when a boundary case needs a second sentence.
@@ -4338,6 +4546,7 @@ Return STRICT JSON: {"rewritten":"...string..."}. No prose.`;
     criterion.original_text_raw ? `Verbatim source text: ${criterion.original_text_raw}` : "",
     `Original text: ${criterion.original_text}`,
     structured ? `Structured target to preserve: ${structured}` : "",
+    criterion.timing ? `Evidence timing to preserve: ${JSON.stringify(criterion.timing)}` : "",
     userHint ? `\nUser guidance (apply this when rewriting): ${userHint}` : "",
   ].filter(Boolean).join("\n");
   return { system, user, manual: formatPromptForManualLLM(system, user) };
@@ -4486,8 +4695,8 @@ async function copyToClipboard(text) {
 
 const TS_V1 = {
   FORMAT: "trialschema",
-  VERSION: "1.0",
-  GENERATOR: { name: "trialschema-ui", version: "1.0.0" },
+  VERSION: "1.1",
+  GENERATOR: { name: "trialschema-ui", version: "1.1.0" },
   DOC_TYPE_MAP: {
     intake_notes:      "intake-notes",
     referral_letters:  "referral-letters",
@@ -4678,6 +4887,8 @@ function tsv1Criterion(c, idx) {
     concept,
     assertion: ["present", "absent", "unknown"].includes(c.assertion) ? c.assertion : "present",
     constraint: tsv1Constraint(c),
+    ...(c.timing !== undefined ? { timing: validateTiming(c.timing) } : {}),
+    ...(c.timing_reviewed ? { extensions: { [WORKSPACE_EXT_KEY]: { timing_reviewed: true } } } : {}),
     routing: {
       primary:  (c.routing?.primary_docs  || []).map(d => coerceDocIdToProfile(d)).filter(Boolean).map(tsv1WireDocId),
       fallback: (c.routing?.fallback_docs || []).map(d => coerceDocIdToProfile(d)).filter(Boolean).map(tsv1WireDocId),
@@ -4830,6 +5041,8 @@ function fromV1Trial(v) {
       priority_level: c.rank || (i + 1),
       status: c.enabled === false ? "inactive" : "active",
       assertion: ["present", "absent", "unknown"].includes(c.assertion) ? c.assertion : "present",
+      ...(c.timing !== undefined ? { timing: validateTiming(c.timing) } : {}),
+      timing_reviewed: c.extensions?.[WORKSPACE_EXT_KEY]?.timing_reviewed === true,
       routing: {
         primary_docs:  (c.routing?.primary  || []).map(tsv1InternalDocId).map(coerceDocIdToProfile).filter(Boolean),
         fallback_docs: (c.routing?.fallback || []).map(tsv1InternalDocId).map(coerceDocIdToProfile).filter(Boolean),
