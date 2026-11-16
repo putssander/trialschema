@@ -109,6 +109,30 @@ Exports keep agent-facing data and UI workflow state separate:
 
 When a previous export is merged with a newer source file, reviewed structured trials, inactive toggles, archive choices, and pending raw rows are preserved so users do not have to repeat prior work.
 
+## Criteria from public registries
+
+```bash
+node ingestion/fetch_registries.mjs NCT05350722 NL-OMON52643 2024-510578-25-00   # add --lang nl for Dutch text
+```
+
+Fetches the eligibility criteria from ClinicalTrials.gov (API v2), the Dutch register onderzoekmetmensen.nl (public
+pages; an official API is available on request via ltr@ccmo.nl) and EU CTIS, and writes
+`ingestion/ignore/registry-<date>.json`. Upload that file in the app and run the extraction as usual. `--previous
+<earlier file>` lists what changed. The Dutch register and CTIS block browser requests, so this runs outside the app.
+
+## Review document and checks
+
+```bash
+npm install                                                              # once (docx library for the tools)
+node tools/check-criteria.mjs export.json --structure                    # structure, no model
+node tools/check-criteria.mjs export.json --endpoint URL --model M       # faithfulness, any OpenAI-compatible server
+node tools/check-criteria.mjs export.json --prompts prompts.md           # copy-paste into Copilot / ChatGPT / Claude
+node tools/review-docx.mjs export.json --previous older.json --review findings.json
+```
+
+`review-docx` writes `trialschema_<fingerprint>.docx`: an overview, then per trial the source, the original criteria,
+the current setup, what changed and open review points. Generate it for every export and archive it next to the JSON.
+
 ## Tests
 
 Run the static prompt/schema regression checks:
@@ -118,6 +142,7 @@ node tests/inactive-export.test.mjs
 node tests/workspace-roundtrip.test.mjs
 node tests/prompt-quality.test.mjs
 node tests/timing.test.mjs
+node tests/registry-fetch.test.mjs
 uv run --with jsonschema python tests/timing-schema.test.py
 node --check app.js
 git diff --check

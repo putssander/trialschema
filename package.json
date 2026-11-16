@@ -1,0 +1,9 @@
+{
+  "name": "trialschema-tools",
+  "private": true,
+  "type": "module",
+  "description": "Command-line tools next to the static app (the app itself has no dependencies).",
+  "devDependencies": {
+    "docx": "9.15.3"
+  }
+}
