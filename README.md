@@ -1,5 +1,7 @@
 # TrialSchema
 
+**Open the app: [sanderputs.com/trialschema](https://sanderputs.com/trialschema/)** (GitHub Pages; runs in your browser, nothing is uploaded).
+
 TrialSchema is a static, browser-only BYOK app for turning clinical-trial eligibility text into an agent-ready JSON export for patient matching. The app keeps provider credentials (OpenAI key or Microsoft Graph access token) in browser `localStorage`; there is no backend.
 
 ## Schema Goal
