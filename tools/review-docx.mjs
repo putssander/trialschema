@@ -89,7 +89,9 @@ export function build(cur, { previous, sources, review, fingerprint }) {
     const reg = (x.identifiers || []).map((i) => regBySource[i.value]).find(Boolean);
     const note = x.extensions?.["org.maastrials.source"]?.criteria_from;
     kids.push(new Paragraph({ heading: HeadingLevel.HEADING_1, pageBreakBefore: true, children: [t(`${x.id} — ${x.title || ""}`)] }),
-      p([t("Source: ", { bold: true }), t(note || sourceOf(x)), t("   Extracted: ", { bold: true }), t(extractedOf(x))]),
+      p([t("Source: ", { bold: true }), t(note || sourceOf(x)), t("   Extracted: ", { bold: true }), t(extractedOf(x)),
+        ...(typeof x.extensions?.["org.trialschema.source"]?.own_site === "boolean"
+          ? [t("   Own site listed: ", { bold: true }), t(x.extensions["org.trialschema.source"].own_site ? "yes" : "no")] : [])]),
       p([t("Care paths: ", { bold: true }), t((x.care_path_ids || []).map((c) => cps[c] || c).join(", ") || "—"),
         t("   Active: ", { bold: true }), t(x.enabled === false ? "no" : "yes")]));
     kids.push(h2("Original criteria"));
@@ -114,7 +116,12 @@ export function build(cur, { previous, sources, review, fingerprint }) {
         })));
     kids.push(h2(previous ? "What changed since the previous version" : "What changed"),
       ...diffTrial(prevById[x.id], x).map((l) => p([t(`• ${l}`, { size: 18 })], { spacing: { after: 0 } })));
-    const f = findings.filter((y) => y.trial === x.id);
+    // Criteria that only Copilot (web search) provided are a review point until compared with the register.
+    const src = x.extensions?.["org.trialschema.source"];
+    const f = [...(src?.verified === false ? [{ trial: x.id, criterion: "all", severity: "high",
+      issue: `Criteria copied by Copilot from ${src.source_url || "the web"}; not yet compared with the register.`,
+      suggested_fix: `Fetch with node ingestion/fetch_registries.mjs ${src.source_id || "<id>"} and compare.` }] : []),
+      ...findings.filter((y) => y.trial === x.id)];
     if (f.length) kids.push(h2("Open review points"),
       table([900, 900, 4400, 3438], ["Criterion", "Severity", "Issue", "Suggested fix"], f.map((y) => [y.criterion, y.severity, y.issue, y.suggested_fix])));
   }

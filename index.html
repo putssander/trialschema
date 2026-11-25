@@ -128,12 +128,14 @@
           </svg>
           <select id="llmProviderSelect" class="bg-white text-xs border border-slate-200 rounded-lg px-2 py-1.5 ring-focus">
             <option value="openai">OpenAI</option>
-            <option value="copilot">Copilot token</option>
+            <option value="copilot">Microsoft 365 Copilot</option>
           </select>
           <input id="apiKeyInput" type="password" autocomplete="off" placeholder="sk-... OpenAI API Key"
             class="bg-transparent text-sm w-72 ring-focus" />
           <button id="saveKeyBtn"
             class="text-xs font-semibold px-2.5 py-1 rounded-lg bg-slate-900 text-white hover:bg-slate-700">Save</button>
+          <button id="msSignInBtn" type="button"
+            class="hidden text-xs font-semibold px-2.5 py-1 rounded-lg bg-slate-900 text-white hover:bg-slate-700">Sign in with Microsoft</button>
           <span id="keyStatus" class="text-[11px] text-slate-500"></span>
           <button id="copilotTokenHelpBtn" type="button"
             class="hidden text-[11px] font-semibold text-slate-500 hover:text-slate-900 underline decoration-slate-300 underline-offset-2">
@@ -201,12 +203,12 @@
               </button>
               <button id="ctgovSourceToggle" type="button" class="inline-flex items-center justify-center gap-1.5 text-[11px] font-semibold text-slate-600 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 hover:bg-slate-50">
                 <svg viewBox="0 0 24 24" class="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 21l-4.3-4.3M11 19a8 8 0 1 1 0-16 8 8 0 0 1 0 16z" stroke-linecap="round"/></svg>
-                Fetch CT.gov
+                Registries
               </button>
             </div>
           </div>
           <div id="ctgovSourcePanel" class="hidden mt-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 space-y-2">
-            <p class="text-[10.5px] text-slate-500 leading-snug">Paste one or more NCT ids. We'll pull the public CT.gov v2 record and stage it as the trial source.</p>
+            <p class="text-[10.5px] text-slate-500 leading-snug">NCT ids are read from ClinicalTrials.gov directly. Trial names, NL-OMON ids (onderzoekmetmensen.nl) and CTIS numbers are looked up by Microsoft 365 Copilot with web search; criteria it finds on ClinicalTrials.gov are replaced by the verbatim record. Separate several with commas.</p>
             <div class="flex flex-wrap items-center gap-2 text-[10.5px] text-slate-500">
               <a href="https://clinicaltrials.gov/search?" target="_blank" rel="noopener" class="brand-chip inline-flex items-center gap-1 rounded-full px-2 py-1 font-medium">
                 <svg viewBox="0 0 24 24" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 3h7v7M10 14 21 3M21 14v7h-7M3 10 14 21" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -218,13 +220,44 @@
               <button type="button" class="ctgov-example brand-chip brand-chip-green rounded-full px-2 py-1 font-medium" data-nct="NCT00188279">NCT00188279</button>
             </div>
             <div class="flex gap-2">
-              <input id="ctgovNctInput" type="text" placeholder="NCT04567890"
-                class="flex-1 text-[12px] bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 ring-focus uppercase tracking-wide" autocapitalize="characters" spellcheck="false" />
+              <input id="ctgovNctInput" type="text" placeholder="NCT04567890, NL-OMON52643, trial name"
+                class="flex-1 text-[12px] bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 ring-focus" spellcheck="false" />
               <button id="ctgovFetchBtn" type="button"
                 class="text-[11px] font-semibold rounded-lg px-3 py-1.5 text-white"
                 style="background:var(--ts-teal)">Load</button>
             </div>
             <div id="ctgovFetchStatus" class="hidden text-[11px] rounded-lg px-2.5 py-1.5"></div>
+            <label class="block text-[10.5px] text-slate-500">Your site, as registries list it
+              <input id="siteNamesInput" type="text" placeholder="e.g. Maastro, Maastricht UMC+"
+                class="mt-1 w-full text-[12px] bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 ring-focus" spellcheck="false" />
+              <span class="block mt-0.5 text-slate-400">A trial whose site list contains one of these names is marked as running at your site. Default Maastro; edit once, saved in this browser and in the export. Empty = no check.</span>
+            </label>
+            <details class="text-[10.5px] text-slate-600">
+              <summary class="font-semibold text-slate-500 hover:text-slate-800">Registry coverage</summary>
+              <table class="mt-1.5 w-full border-separate border-spacing-y-1">
+                <tbody>
+                  <tr><td class="pr-2 align-top">ClinicalTrials.gov</td>
+                    <td><span class="badge bg-emerald-100 text-emerald-800">Automatic</span> verbatim, read in the browser</td></tr>
+                  <tr><td class="pr-2 align-top">Dutch register<br><span class="text-slate-400">onderzoekmetmensen.nl</span></td>
+                    <td><span class="badge bg-cyan-100 text-cyan-800">Via Copilot</span> to be checked<br>
+                      <span class="badge bg-slate-200 text-slate-700">Command line</span> verbatim<br>
+                      <span class="badge bg-amber-100 text-amber-800">Upcoming</span> official API (CCMO)</td></tr>
+                  <tr><td class="pr-2 align-top">EU CTIS<br><span class="text-slate-400">euclinicaltrials.eu</span></td>
+                    <td><span class="badge bg-cyan-100 text-cyan-800">Via Copilot</span> to be checked<br>
+                      <span class="badge bg-slate-200 text-slate-700">Command line</span> verbatim, Dutch translation</td></tr>
+                  <tr><td class="pr-2 align-top">Protocol publications<br><span class="text-slate-400">Europe PMC</span></td>
+                    <td><span class="badge bg-cyan-100 text-cyan-800">Via Copilot</span> listed with the trial<br>
+                      <span class="badge bg-slate-200 text-slate-700">Command line</span> protocol papers (<code>--papers</code>)<br>
+                      <span class="badge bg-amber-100 text-amber-800">Upcoming</span> criteria only in the protocol</td></tr>
+                  <tr><td class="pr-2 align-top">Own-site check<br><span class="text-slate-400">names set above</span></td>
+                    <td><span class="badge bg-emerald-100 text-emerald-800">Automatic</span> ClinicalTrials.gov<br>
+                      <span class="badge bg-slate-200 text-slate-700">Command line</span> Dutch register, CTIS</td></tr>
+                  <tr><td class="pr-2 align-top">Dutch guidelines<br><span class="text-slate-400">richtlijnendatabase.nl</span></td>
+                    <td><span class="badge bg-amber-100 text-amber-800">Upcoming</span> explicit guidance for criteria that cite a guideline</td></tr>
+                </tbody>
+              </table>
+              <p class="mt-1 text-slate-400 leading-snug">All sources then go through the same extraction into explicit criteria (clarified text, strict operators, timing, routing). <em>To be checked</em>: Copilot copies the text; compare it with the register before use. <em>Command line</em>: <code>node ingestion/fetch_registries.mjs</code>, then upload its file.</p>
+            </details>
           </div>
           <div id="formatBanner" class="hidden mt-2 text-[11px] rounded-lg px-2.5 py-1.5"></div>
         </div>
@@ -309,7 +342,7 @@
           </button>
         </div>
         <p class="mt-2 text-xs text-slate-600 leading-relaxed">
-          Token paste is a temporary testing path. A Microsoft Graph access token is short-lived and belongs to the signed-in work account. For normal end users, use a future <strong>Sign in with Microsoft</strong> flow instead of asking them to copy tokens.
+          Token paste is the testing path for sites without Microsoft sign-in. Once the site's app registration is set up (<code class="text-[11px] bg-slate-100 rounded px-1">tools/register-entra-app.sh</code>), users see <strong>Sign in with Microsoft</strong> here instead and never copy tokens.
         </p>
         <div class="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 leading-relaxed">
           Only paste a token on trusted TrialSchema pages. The token is stored in this browser's <code>localStorage</code> and expires automatically.
@@ -515,6 +548,7 @@
     </details>
   </template>
 
+  <script src="config.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
