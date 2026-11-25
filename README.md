@@ -49,36 +49,19 @@ It registers the redirect page `auth.html` (site, `127.0.0.1:5173`, `localhost:5
 delegated scopes, then prints the admin-consent link: those scopes need consent from a tenant administrator once.
 Publish `config.js` with the site. Without a client id in `config.js` the app shows the token-paste test path below.
 
-### Copilot token paste (testing)
+### Copilot token paste (until sign-in is set up)
 
-For Copilot token mode without sign-in, choose **Microsoft 365 Copilot** in the header and paste a short-lived delegated Microsoft Graph bearer token for a work account with a Microsoft 365 Copilot add-on license. The token must include all Microsoft 365 Copilot Chat API delegated scopes: `Sites.Read.All`, `Mail.Read`, `People.Read.All`, `OnlineMeetingTranscript.Read.All`, `Chat.Read`, `ChannelMessage.Read.All`, and `ExternalItem.Read.All`. The app does not attach OneDrive or SharePoint files; it sends the TrialSchema prompt text and requests JSON back.
+Choose **Microsoft 365 Copilot** in the header; without a site sign-in the app opens three steps: open Graph Explorer
+(the link fills in `POST beta /copilot/conversations` with body `{}`), consent to permissions the first time, then copy
+the **Access token** tab and paste it. Pasting saves it at once and the token is found in any copied form (bare,
+`Bearer …`, a header line, JSON, a curl command). The header shows the account and the minutes left, or what is wrong
+(expired, missing permission, not a Graph token); an expired token is never sent. Tokens last about an hour.
 
-### Microsoft 365 Copilot Token Testing
-
-Token paste is intended for early testing only. Normal end users should eventually use a built-in **Sign in with Microsoft** flow, because Microsoft Graph access tokens are short-lived and awkward to obtain manually.
-
-For a test token:
-
-1. Open [Microsoft Graph Explorer](https://developer.microsoft.com/graph/graph-explorer) and sign in with the same work account that has Microsoft 365 Copilot API access.
-2. Switch to the `beta` endpoint, choose `POST`, and run `/copilot/conversations` with request body `{}`.
-3. Copy the returned conversation `id`, then run `POST /copilot/conversations/{id}/chat` with a smoke-test body:
-
-   ```json
-   {
-     "message": { "text": "Reply with OK." },
-     "locationHint": { "timeZone": "Europe/Amsterdam" }
-   }
-   ```
-
-4. If prompted, use **Modify permissions** or **Consent to permissions**. Tenant admin consent may be required for the Copilot Chat API delegated permission set. Re-copy the token after any consent change.
-5. If Graph Explorer exposes an **Access token** panel/menu, copy the bearer token only after both the conversation create and chat calls work, then paste it into TrialSchema's **Copilot token** field.
-6. If token copy is unavailable in your Graph Explorer experience, use Postman or move straight to MSAL sign-in; end users should not be asked to perform this manual token step.
-
-If TrialSchema can create a Copilot conversation but the chat call returns `Microsoft Graph HTTP 403`, the `/copilot/conversations` permission check was not enough. Test `POST /copilot/conversations/{id}/chat` with the same account in Graph Explorer. That usually means the user or tenant can reach the Copilot API surface but is still missing one or more required delegated scopes, admin consent, the Microsoft 365 Copilot add-on license, or tenant API entitlement for the chat action. TrialSchema first sends the strict no-web-grounding payload and retries once without the optional web-context block, while still keeping the required `locationHint.timeZone`, so payload compatibility issues are easier to separate from permission failures.
-
-If the chat response contains `It looks like you don't have a valid license`, Graph permissions are not the blocker. Assign or activate the Microsoft 365 Copilot add-on license for the exact signed-in work account, then obtain a fresh Graph token.
-
-If Graph Explorer itself returns `UnknownError` on `POST /copilot/conversations`, the failure is upstream of TrialSchema and happens before any trial prompt is sent. Save the response `request-id`, `client-request-id`, and `date`; those are the values a tenant admin or Microsoft support needs to trace Copilot Chat API availability for that tenant/user.
+The token needs the Copilot Chat API delegated scopes (Sites.Read.All, Mail.Read, People.Read.All,
+OnlineMeetingTranscript.Read.All, Chat.Read, ChannelMessage.Read.All, ExternalItem.Read.All) and a work account with a
+Microsoft 365 Copilot licence. If chat returns HTTP 403, test `POST /copilot/conversations/{id}/chat` in Graph Explorer:
+failing there too means consent, licence or API access is missing. "You don't have a valid license" means the licence,
+not permissions. For `UnknownError` on creating a conversation, keep the request id and date for IT or Microsoft support.
 
 ## Matching-Oriented Criteria
 
@@ -139,8 +122,10 @@ When a previous export is merged with a newer source file, reviewed structured t
 
 **In the app:** open **Registries**, enter NCT ids, NL-OMON ids, CTIS numbers or trial names (comma-separated) and
 click **Load**. NCT ids are read from ClinicalTrials.gov directly. The Dutch register and CTIS block browser
-requests, so the other queries go to Microsoft 365 Copilot with web search on: it finds the registry records, copies
-the criteria and reports other registry ids, whether your site is listed, and protocol publications. When an NCT
+requests, so the other queries go to Microsoft 365 Copilot with web search on. Without a Copilot connection the panel
+offers two steps instead, with no sign-in or token: **Copy question and open Copilot** (Copilot Chat with your work
+account; ChatGPT or Claude with web search work too), then paste the answer back and **Use answer**. Either way Copilot finds the registry records, copies the
+criteria and reports other registry ids, whether your site is listed, and protocol publications. When an NCT
 id turns up, the app fetches that record and uses its verbatim text (`verified: true`). Criteria only Copilot
 provided stay `verified: false`; the review document lists them as a high review point until the command below has
 confirmed them. Trial extraction itself always runs with web search off.
@@ -193,6 +178,7 @@ node tests/prompt-quality.test.mjs
 node tests/timing.test.mjs
 node tests/registry-fetch.test.mjs
 node tests/registry-lookup.test.mjs
+node tests/token-paste.test.mjs
 node tests/ms-signin.test.mjs
 node tests/extensions-roundtrip.test.mjs
 uv run --with jsonschema python tests/timing-schema.test.py

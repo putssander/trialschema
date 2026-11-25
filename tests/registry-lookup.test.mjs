@@ -60,7 +60,19 @@ assert.equal(context.msConfig().clientId, "", "no client id configured in tests"
 const direct = await context.registryLookup(["NCT05350722"]);
 assert.equal(direct.rows[0].verified, true);
 assert.equal(direct.rows[0].own_site, false, "another centre in the same city does not count");
-await assert.rejects(context.registryLookup(["FLUID"]), /cannot be read from the browser/);
+// Not connected: the app offers copy and paste with Copilot Chat instead of failing.
+const manual = await context.registryLookup(["FLUID"]);
+assert.match(manual.manual.prompt, /\[SYSTEM\][\s\S]*onderzoekmetmensen\.nl[\s\S]*\[USER\][\s\S]*1\. FLUID/);
+assert.deepEqual(plain(manual.manual.queries), ["FLUID"]);
+
+// The pasted chat answer (with the chat's own text and code fences around it) gives the same rows, no Graph call.
+calls.length = 0;
+const pasted = await context.registryLookup(["FLUID", "PERYTON", "NOPE"],
+  { pastedAnswer: `Here is what I found:\n\`\`\`json\n${JSON.stringify(copilotAnswer)}\n\`\`\`\nLet me know if you need more.` });
+assert.equal(calls.filter((c) => /graph\.microsoft\.com/.test(c.url)).length, 0, "no Graph call when pasting");
+assert.equal(pasted.rows.find((r) => r.trial_id === "FLUID").retrieved_by, "chat-paste");
+assert.equal(pasted.rows.find((r) => r.trial_id === "FLUID").verified, false);
+assert.equal(pasted.rows.find((r) => r.trial_id === "PERYTON").verified, true, "CT.gov still replaces pasted text");
 
 // Signed in (session in sessionStorage) with Copilot selected.
 store.set("trialschema.ms.session", JSON.stringify({ access_token: "tok", expires_at: Date.now() + 3600e3, username: "user@example.org" }));

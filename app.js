@@ -268,7 +268,9 @@ function normalizeProvider(value) {
 }
 
 function hasLLMCredentials() {
-  return state.llmProvider === "copilot" ? (!!state.copilotToken || !!msSession()) : !!state.apiKey;
+  return state.llmProvider === "copilot"
+    ? (!!msSession() || (!!state.copilotToken && !graphTokenInfo(state.copilotToken)?.expired))
+    : !!state.apiKey;
 }
 
 function activeProviderName() {
@@ -291,7 +293,44 @@ function missingCredentialText() {
 
 function normalizeCredentialInput(value) {
   const v = String(value || "").trim();
-  return state.llmProvider === "copilot" ? v.replace(/^Bearer\s+/i, "").trim() : v;
+  return state.llmProvider === "copilot" ? (extractGraphToken(v) || v.replace(/^Bearer\s+/i, "").trim()) : v;
+}
+
+// The access token inside whatever was copied: the bare token, "Bearer …", a header line, JSON or a curl command.
+function extractGraphToken(text) {
+  const m = String(text || "").match(/eyJ[\w-]+\.eyJ[\w-]+\.[\w-]*/);
+  return m ? m[0] : "";
+}
+
+// What the pasted token says about itself: account, expiry, missing Copilot scopes. null when it is not a JWT.
+function graphTokenInfo(token, now = Date.now()) {
+  const claims = decodeJwtPayload(token);
+  if (!claims) return null;
+  const scopes = new Set(String(claims.scp || "").split(/\s+/).filter(Boolean));
+  const expiresAt = Number(claims.exp) ? Number(claims.exp) * 1000 : 0;
+  const aud = String(claims.aud || "");
+  return {
+    user: claims.upn || claims.preferred_username || claims.unique_name || "",
+    expiresAt,
+    minutesLeft: expiresAt ? Math.max(0, Math.floor((expiresAt - now) / 60000)) : null,
+    expired: expiresAt ? expiresAt <= now : false,
+    missing: COPILOT_CHAT_REQUIRED_SCOPES.filter(s => !scopes.has(s)),
+    graph: !aud || aud === "https://graph.microsoft.com" || aud === "00000003-0000-0000-c000-000000000000",
+  };
+}
+
+// Header status for a pasted token: who, how long, or what is wrong.
+function copilotTokenStatus(token = state.copilotToken, now = Date.now()) {
+  if (!token) return { text: "paste token", cls: "text-slate-400" };
+  const info = graphTokenInfo(token, now);
+  if (!info) return { text: "not a Microsoft token", cls: "text-rose-600" };
+  if (!info.graph) return { text: "token is not for Microsoft Graph", cls: "text-rose-600" };
+  if (info.expired) return { text: "token expired: paste a new one", cls: "text-rose-600" };
+  if (info.missing.length) return { text: `missing permission: ${info.missing.join(", ")}`, cls: "text-amber-600" };
+  const who = info.user ? `${info.user} · ` : "";
+  return info.minutesLeft !== null && info.minutesLeft < 10
+    ? { text: `${who}${info.minutesLeft} min left`, cls: "text-amber-600" }
+    : { text: `${who}${info.minutesLeft ?? "?"} min left`, cls: "text-emerald-600" };
 }
 
 // Fetch available GPT models from OpenAI and populate the dropdown.
@@ -319,9 +358,10 @@ async function loadModels() {
     }
     if (status) {
       const session = msSession();
-      status.textContent = session ? (session.username || "signed in")
-        : msConfig().clientId ? "" : (state.copilotToken ? "Graph token saved" : "paste Graph token");
-      status.className = `text-[11px] ${session || state.copilotToken ? "text-emerald-600" : "text-slate-400"}`;
+      const st = session ? { text: session.username || "signed in", cls: "text-emerald-600" }
+        : msConfig().clientId ? { text: "", cls: "text-slate-400" } : copilotTokenStatus();
+      status.textContent = st.text;
+      status.className = `text-[11px] ${st.cls}`;
     }
     updateApiKeyDependentUi();
     return;
@@ -426,7 +466,7 @@ function loadApiKey() {
   if (input) {
     input.value = value;
     input.placeholder = state.llmProvider === "copilot"
-      ? "Paste Microsoft Graph access token"
+      ? "Paste Copilot token (see token help)"
       : "sk-... OpenAI API Key";
   }
   if (value && status) {
@@ -448,8 +488,9 @@ function saveApiKey() {
     localStorage.setItem(KEY_STORAGE, v);
   }
   const status = document.getElementById("keyStatus");
-  status.textContent = v ? (state.llmProvider === "copilot" ? "Graph token saved" : "checking...") : "manual mode";
-  status.className = `text-[11px] ${v ? "text-slate-500" : "text-slate-400"}`;
+  const st = state.llmProvider === "copilot" ? copilotTokenStatus(v) : { text: v ? "checking..." : "manual mode", cls: v ? "text-slate-500" : "text-slate-400" };
+  status.textContent = st.text;
+  status.className = `text-[11px] ${st.cls}`;
   updateApiKeyDependentUi();
   // Refresh model list now that we have (or lost) a credential.
   loadModels();
@@ -460,12 +501,16 @@ function saveApiKey() {
 function setLLMProvider(provider) {
   state.llmProvider = normalizeProvider(provider);
   localStorage.setItem(PROVIDER_STORAGE, state.llmProvider);
+  // Copilot chosen without a usable token (and no Microsoft sign-in on this site): show the three steps right away.
+  if (state.llmProvider === "copilot" && !msConfig().clientId && !hasLLMCredentials()) {
+    document.getElementById("copilotTokenHelpModal")?.classList.remove("hidden");
+  }
   const input = document.getElementById("apiKeyInput");
   const saved = state.llmProvider === "copilot" ? state.copilotToken : state.apiKey;
   if (input) {
     input.value = saved || "";
     input.placeholder = state.llmProvider === "copilot"
-      ? "Paste Microsoft Graph access token"
+      ? "Paste Copilot token (see token help)"
       : "sk-... OpenAI API Key";
   }
   loadModels();
@@ -918,13 +963,25 @@ function bindManualUploads() {
         ctgovBtn.textContent = prevLabel;
       }
     };
-    const triggerRegistryLookup = async (queries) => {
+    const manualBox = document.getElementById("registryManual");
+    let manualQueries = null;
+    const triggerRegistryLookup = async (queries, pastedAnswer) => {
       ctgovBtn.disabled = true;
       const prevLabel = ctgovBtn.textContent;
       ctgovBtn.textContent = "Looking up…";
       setCtgovRunHint("");
       try {
-        const { rows, notes } = await registryLookup(queries, { onStatus: (msg) => setStatus("ok", escapeHtml(msg)) });
+        const { rows, notes, manual } = await registryLookup(queries, { onStatus: (msg) => setStatus("ok", escapeHtml(msg)), pastedAnswer });
+        if (manual) {
+          // Not connected to Copilot: ask Copilot Chat by copy and paste.
+          manualQueries = queries;
+          manualBox.dataset.prompt = manual.prompt;
+          manualBox.classList.remove("hidden");
+          document.getElementById("registryAnswer").value = "";
+          setStatus("ok", `Ask Copilot about <strong>${escapeHtml(manual.queries.join(", "))}</strong> in the two steps below.`);
+          return;
+        }
+        manualBox?.classList.add("hidden");
         const noteHtml = notes.length ? `<ul class="mt-1 list-disc pl-4">${notes.map(n => `<li>${escapeHtml(n)}</li>`).join("")}</ul>` : "";
         if (!rows.length) { setStatus("warn", `No registry criteria found.${noteHtml}`); return; }
         const date = new Date().toISOString().slice(0, 10);
@@ -946,6 +1003,21 @@ function bindManualUploads() {
         ctgovBtn.textContent = prevLabel;
       }
     };
+    document.getElementById("registryCopyPrompt")?.addEventListener("click", async () => {
+      const prompt = manualBox.dataset.prompt || "";
+      let copied = false;
+      try { await navigator.clipboard.writeText(prompt); copied = true; } catch { /* shown for manual copy below */ }
+      const fallback = document.getElementById("registryPromptText");
+      fallback.value = prompt;
+      fallback.classList.toggle("hidden", copied);
+      if (!copied) fallback.select();
+      window.open("https://m365.cloud.microsoft/chat", "_blank", "noopener");
+    });
+    document.getElementById("registryUseAnswer")?.addEventListener("click", () => {
+      const text = document.getElementById("registryAnswer").value.trim();
+      if (!text) { setStatus("warn", "Paste Copilot's answer first."); return; }
+      if (manualQueries) triggerRegistryLookup(manualQueries, text);
+    });
     ctgovBtn.addEventListener("click", trigger);
     ctgovInput.addEventListener("keydown", (e) => { if (e.key === "Enter") trigger(); });
     document.querySelectorAll(".ctgov-example").forEach((btn) => {
@@ -1737,6 +1809,10 @@ function latestCopilotText(payload) {
 async function graphFetchJson(url, { method = "POST", body, signal } = {}) {
   if (msSession()) state.copilotToken = await msAccessToken();
   if (!state.copilotToken) throw new Error(missingCredentialText());
+  const pasted = !msSession() && graphTokenInfo(state.copilotToken);
+  if (pasted?.expired) {
+    throw new Error(`The pasted Copilot token expired at ${new Date(pasted.expiresAt).toLocaleTimeString()}. Get a new one from Graph Explorer (token help) and paste it.`);
+  }
   const res = await fetch(url, {
     method,
     headers: {
@@ -2120,8 +2196,9 @@ function mergeRegistryRow(copilotRow, ctgovRow, retrievedAt) {
   };
 }
 
-// queries: trial names or registry ids. Returns { rows, notes }.
-async function registryLookup(queries, { signal, onStatus = () => {} } = {}) {
+// queries: trial names or registry ids. Returns { rows, notes } and, when Copilot is not connected, manual: { prompt }
+// so the user can ask Copilot Chat (or any chatbot with web search) and paste the answer back (pastedAnswer).
+async function registryLookup(queries, { signal, onStatus = () => {}, pastedAnswer } = {}) {
   const retrievedAt = new Date().toISOString();
   const rows = [], notes = [];
   const nctOnly = queries.filter(q => registryKind(q) === "ctgov");
@@ -2131,12 +2208,18 @@ async function registryLookup(queries, { signal, onStatus = () => {} } = {}) {
     rows.push({ ...ctgovRegistryRow(await fetchCtgovStudy(nct.toUpperCase(), signal)), retrieved_at: retrievedAt, retrieved_by: "registry", verified: true });
   }
   if (!viaCopilot.length) return { rows, notes };
-  if (state.llmProvider !== "copilot" || !hasLLMCredentials()) {
-    throw new Error(`The Dutch register and CTIS cannot be read from the browser. Choose Microsoft 365 Copilot and sign in to look up ${viaCopilot.join(", ")}, or run node ingestion/fetch_registries.mjs and upload its file.`);
-  }
-  onStatus(`Asking Copilot to find ${viaCopilot.length} trial${viaCopilot.length === 1 ? "" : "s"} in the registers…`);
   const { system, user } = buildRegistryLookupPrompt(viaCopilot);
-  const answer = await callCopilotJson({ system, user, signal, web: true });
+  const connected = state.llmProvider === "copilot" && hasLLMCredentials();
+  if (pastedAnswer === undefined && !connected) {
+    return { rows, notes, manual: { prompt: formatPromptForManualLLM(system, user), queries: viaCopilot } };
+  }
+  let answer;
+  if (pastedAnswer !== undefined) {
+    answer = parseModelJson(pastedAnswer, "The pasted answer");
+  } else {
+    onStatus(`Asking Copilot to find ${viaCopilot.length} trial${viaCopilot.length === 1 ? "" : "s"} in the registers…`);
+    answer = await callCopilotJson({ system, user, signal, web: true });
+  }
   const results = Array.isArray(answer?.results) ? answer.results : [];
   for (const [i, q] of viaCopilot.entries()) {
     const r = results.find(x => String(x?.query || "").trim().toLowerCase() === q.toLowerCase()) || results[i];
@@ -2152,6 +2235,7 @@ async function registryLookup(queries, { signal, onStatus = () => {} } = {}) {
       catch (e) { notes.push(`${q}: ${e.message}; kept Copilot's text`); }
     }
     const row = mergeRegistryRow({ ...r, query: q }, ct, retrievedAt);
+    if (!row.verified && pastedAnswer !== undefined) row.retrieved_by = "chat-paste";
     if (!row.inclusion && !row.exclusion) { notes.push(`${q}: record found but no criteria (${row.source_url || "no URL"})`); continue; }
     if (!row.verified) notes.push(`${q}: criteria from Copilot (${row.source_id || "web"}), not yet checked against the register`);
     if (r.notes) notes.push(`${q}: ${r.notes}`);
@@ -5705,6 +5789,19 @@ document.addEventListener("DOMContentLoaded", () => {
 
   document.getElementById("saveKeyBtn").addEventListener("click", saveApiKey);
   document.getElementById("msSignInBtn")?.addEventListener("click", toggleMsSignIn);
+  // Copilot token: pasting saves it at once (no Save click); the header counts down to its expiry.
+  document.getElementById("apiKeyInput")?.addEventListener("paste", () => {
+    if (state.llmProvider === "copilot") setTimeout(saveApiKey, 0);
+  });
+  setInterval(() => {
+    if (state.llmProvider !== "copilot" || msSession()) return;
+    const status = document.getElementById("keyStatus");
+    if (!status) return;
+    const st = copilotTokenStatus();
+    status.textContent = st.text;
+    status.className = `text-[11px] ${st.cls}`;
+    updateApiKeyDependentUi();
+  }, 30000);
   document.getElementById("apiKeyInput").addEventListener("keydown", (e) => {
     if (e.key === "Enter") saveApiKey();
   });
