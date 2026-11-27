@@ -199,6 +199,8 @@ const state = {
   existingExport: null, // parsed prior trialschema_export.json
   existingById: {},     // map: trial_id -> structured trial (verbatim re-use)
   archivedTrialIds: [], // workspace-only UI archive state, persisted in export extensions
+  siteNames: [],        // how the user's own site appears in registry site lists (Registries panel; saved in the export)
+  foreignEnvelopeExtensions: null, // other tools' top-level extensions from an imported export, written back unchanged
   rawRows: [],          // normalized raw rows (pre-LLM)
   results: [],          // final structured trials (in display order)
   resultsById: {},      // map: trial_id -> structured trial
@@ -266,7 +268,9 @@ function normalizeProvider(value) {
 }
 
 function hasLLMCredentials() {
-  return state.llmProvider === "copilot" ? !!state.copilotToken : !!state.apiKey;
+  return state.llmProvider === "copilot"
+    ? (!!msSession() || (!!state.copilotToken && !graphTokenInfo(state.copilotToken)?.expired))
+    : !!state.apiKey;
 }
 
 function activeProviderName() {
@@ -283,13 +287,50 @@ function activeAIByline() {
 
 function missingCredentialText() {
   return state.llmProvider === "copilot"
-    ? "Paste a Microsoft Graph access token in the header first."
+    ? (msConfig().clientId ? "Sign in with Microsoft in the header first." : "Paste a Microsoft Graph access token in the header first.")
     : "Save an OpenAI key in the header first.";
 }
 
 function normalizeCredentialInput(value) {
   const v = String(value || "").trim();
-  return state.llmProvider === "copilot" ? v.replace(/^Bearer\s+/i, "").trim() : v;
+  return state.llmProvider === "copilot" ? (extractGraphToken(v) || v.replace(/^Bearer\s+/i, "").trim()) : v;
+}
+
+// The access token inside whatever was copied: the bare token, "Bearer …", a header line, JSON or a curl command.
+function extractGraphToken(text) {
+  const m = String(text || "").match(/eyJ[\w-]+\.eyJ[\w-]+\.[\w-]*/);
+  return m ? m[0] : "";
+}
+
+// What the pasted token says about itself: account, expiry, missing Copilot scopes. null when it is not a JWT.
+function graphTokenInfo(token, now = Date.now()) {
+  const claims = decodeJwtPayload(token);
+  if (!claims) return null;
+  const scopes = new Set(String(claims.scp || "").split(/\s+/).filter(Boolean));
+  const expiresAt = Number(claims.exp) ? Number(claims.exp) * 1000 : 0;
+  const aud = String(claims.aud || "");
+  return {
+    user: claims.upn || claims.preferred_username || claims.unique_name || "",
+    expiresAt,
+    minutesLeft: expiresAt ? Math.max(0, Math.floor((expiresAt - now) / 60000)) : null,
+    expired: expiresAt ? expiresAt <= now : false,
+    missing: COPILOT_CHAT_REQUIRED_SCOPES.filter(s => !scopes.has(s)),
+    graph: !aud || aud === "https://graph.microsoft.com" || aud === "00000003-0000-0000-c000-000000000000",
+  };
+}
+
+// Header status for a pasted token: who, how long, or what is wrong.
+function copilotTokenStatus(token = state.copilotToken, now = Date.now()) {
+  if (!token) return { text: "paste token", cls: "text-slate-400" };
+  const info = graphTokenInfo(token, now);
+  if (!info) return { text: "not a Microsoft token", cls: "text-rose-600" };
+  if (!info.graph) return { text: "token is not for Microsoft Graph", cls: "text-rose-600" };
+  if (info.expired) return { text: "token expired: paste a new one", cls: "text-rose-600" };
+  if (info.missing.length) return { text: `missing permission: ${info.missing.join(", ")}`, cls: "text-amber-600" };
+  const who = info.user ? `${info.user} · ` : "";
+  return info.minutesLeft !== null && info.minutesLeft < 10
+    ? { text: `${who}${info.minutesLeft} min left`, cls: "text-amber-600" }
+    : { text: `${who}${info.minutesLeft ?? "?"} min left`, cls: "text-emerald-600" };
 }
 
 // Fetch available GPT models from OpenAI and populate the dropdown.
@@ -316,8 +357,11 @@ async function loadModels() {
       sel.classList.add("hidden");
     }
     if (status) {
-      status.textContent = state.copilotToken ? "Graph token saved" : "paste Graph token";
-      status.className = `text-[11px] ${state.copilotToken ? "text-emerald-600" : "text-slate-400"}`;
+      const session = msSession();
+      const st = session ? { text: session.username || "signed in", cls: "text-emerald-600" }
+        : msConfig().clientId ? { text: "", cls: "text-slate-400" } : copilotTokenStatus();
+      status.textContent = st.text;
+      status.className = `text-[11px] ${st.cls}`;
     }
     updateApiKeyDependentUi();
     return;
@@ -422,7 +466,7 @@ function loadApiKey() {
   if (input) {
     input.value = value;
     input.placeholder = state.llmProvider === "copilot"
-      ? "Paste Microsoft Graph access token"
+      ? "Paste Copilot token (see token help)"
       : "sk-... OpenAI API Key";
   }
   if (value && status) {
@@ -444,8 +488,9 @@ function saveApiKey() {
     localStorage.setItem(KEY_STORAGE, v);
   }
   const status = document.getElementById("keyStatus");
-  status.textContent = v ? (state.llmProvider === "copilot" ? "Graph token saved" : "checking...") : "manual mode";
-  status.className = `text-[11px] ${v ? "text-slate-500" : "text-slate-400"}`;
+  const st = state.llmProvider === "copilot" ? copilotTokenStatus(v) : { text: v ? "checking..." : "manual mode", cls: v ? "text-slate-500" : "text-slate-400" };
+  status.textContent = st.text;
+  status.className = `text-[11px] ${st.cls}`;
   updateApiKeyDependentUi();
   // Refresh model list now that we have (or lost) a credential.
   loadModels();
@@ -456,12 +501,16 @@ function saveApiKey() {
 function setLLMProvider(provider) {
   state.llmProvider = normalizeProvider(provider);
   localStorage.setItem(PROVIDER_STORAGE, state.llmProvider);
+  // Copilot chosen without a usable token (and no Microsoft sign-in on this site): show the three steps right away.
+  if (state.llmProvider === "copilot" && !msConfig().clientId && !hasLLMCredentials()) {
+    document.getElementById("copilotTokenHelpModal")?.classList.remove("hidden");
+  }
   const input = document.getElementById("apiKeyInput");
   const saved = state.llmProvider === "copilot" ? state.copilotToken : state.apiKey;
   if (input) {
     input.value = saved || "";
     input.placeholder = state.llmProvider === "copilot"
-      ? "Paste Microsoft Graph access token"
+      ? "Paste Copilot token (see token help)"
       : "sk-... OpenAI API Key";
   }
   loadModels();
@@ -471,8 +520,37 @@ function setLLMProvider(provider) {
 
 function updateApiKeyDependentUi() {
   const hasKey = hasLLMCredentials();
+  const copilot = state.llmProvider === "copilot";
+  // With the site's Entra app registration, Copilot is a sign-in; otherwise the pasted-token test path remains.
+  const signIn = copilot && !!msConfig().clientId;
   document.getElementById("manualModeHint")?.classList.toggle("hidden", hasKey);
-  document.getElementById("copilotTokenHelpBtn")?.classList.toggle("hidden", state.llmProvider !== "copilot");
+  document.getElementById("copilotTokenHelpBtn")?.classList.toggle("hidden", !copilot || signIn);
+  document.getElementById("apiKeyInput")?.classList.toggle("hidden", signIn);
+  document.getElementById("saveKeyBtn")?.classList.toggle("hidden", signIn);
+  const btn = document.getElementById("msSignInBtn");
+  if (btn) {
+    btn.classList.toggle("hidden", !signIn);
+    btn.textContent = msSession() ? "Sign out" : "Sign in with Microsoft";
+  }
+}
+
+async function toggleMsSignIn() {
+  const status = document.getElementById("keyStatus");
+  try {
+    if (msSession()) {
+      msSignOut();
+    } else {
+      if (status) { status.textContent = "signing in…"; status.className = "text-[11px] text-slate-500"; }
+      await msSignIn();
+    }
+  } catch (e) {
+    if (status) { status.textContent = e.message; status.className = "text-[11px] text-rose-600"; }
+    updateApiKeyDependentUi();
+    return;
+  }
+  loadModels();
+  trialItems.forEach((it, i) => renderRow(it, i));
+  updateProcessButtonLabel();
 }
 
 
@@ -613,7 +691,7 @@ function firstParsedTrialEnabled(values) {
 function sourceTrialEnabled(raw) {
   const r = raw?.__raw || raw || {};
   const m = r.metadata || {};
-  if (raw?.__sourceFormat === "spreadsheet") return firstParsedTrialEnabled([r.active, r.status, r.enabled]);
+  if (isRowSourceFormat(raw?.__sourceFormat)) return firstParsedTrialEnabled([r.active, r.status, r.enabled]);
   const candidates = [r.enabled, r.active, m.enabled, m.active];
   if (raw?.__sourceFormat !== "ctgov") candidates.push(r.status, m.status);
   return firstParsedTrialEnabled(candidates);
@@ -772,6 +850,7 @@ function detectFormat(filename, sampleRow) {
   if (ext === "xlsx" || ext === "xls" || ext === "csv") return "spreadsheet";
   const r = sampleRow || {};
   if (r.format === TS_V1.FORMAT || (r.kind === "trial" && "criteria" in r)) return "trialschema";
+  if ((r.source_url || r.source_id) && ("inclusion" in r || "exclusion" in r)) return "registry";
   // ClinicalTrials.gov API v2 study record (or top-level wrapper unwrapped already).
   if (r.protocolSection && (r.protocolSection.identificationModule || r.protocolSection.eligibilityModule)) return "ctgov";
   if ("_id" in r || (r.metadata && ("inclusion_criteria" in r.metadata || "brief_title" in r.metadata))) return "trialgpt";
@@ -848,10 +927,10 @@ function bindManualUploads() {
     const trigger = async () => {
       showCtgovSourcePanel();
       const raw = (ctgovInput.value || "").trim();
-      if (!raw) { setCtgovRunHint(""); setStatus("warn", "Enter an NCT id, e.g. <code>NCT00995306</code>."); return; }
-      const ids = raw.split(/[\s,;]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
-      const bad = ids.filter(s => !/^NCT\d{8}$/.test(s));
-      if (bad.length) { setCtgovRunHint(""); setStatus("error", `Not valid NCT id(s): <code>${bad.join(", ")}</code>`); return; }
+      if (!raw) { setCtgovRunHint(""); setStatus("warn", "Enter an NCT id, NL-OMON id, CTIS number or trial name."); return; }
+      const queries = parseRegistryQueries(raw);
+      if (queries.some(q => registryKind(q) !== "ctgov")) { await triggerRegistryLookup(queries); return; }
+      const ids = queries.map(s => s.toUpperCase());
       ctgovBtn.disabled = true;
       const prevLabel = ctgovBtn.textContent;
       ctgovBtn.textContent = "Loading…";
@@ -884,6 +963,61 @@ function bindManualUploads() {
         ctgovBtn.textContent = prevLabel;
       }
     };
+    const manualBox = document.getElementById("registryManual");
+    let manualQueries = null;
+    const triggerRegistryLookup = async (queries, pastedAnswer) => {
+      ctgovBtn.disabled = true;
+      const prevLabel = ctgovBtn.textContent;
+      ctgovBtn.textContent = "Looking up…";
+      setCtgovRunHint("");
+      try {
+        const { rows, notes, manual } = await registryLookup(queries, { onStatus: (msg) => setStatus("ok", escapeHtml(msg)), pastedAnswer });
+        if (manual) {
+          // Not connected to Copilot: ask Copilot Chat by copy and paste.
+          manualQueries = queries;
+          manualBox.dataset.prompt = manual.prompt;
+          manualBox.classList.remove("hidden");
+          document.getElementById("registryAnswer").value = "";
+          setStatus("ok", `Ask Copilot about <strong>${escapeHtml(manual.queries.join(", "))}</strong> in the two steps below.`);
+          return;
+        }
+        manualBox?.classList.add("hidden");
+        const noteHtml = notes.length ? `<ul class="mt-1 list-disc pl-4">${notes.map(n => `<li>${escapeHtml(n)}</li>`).join("")}</ul>` : "";
+        if (!rows.length) { setStatus("warn", `No registry criteria found.${noteHtml}`); return; }
+        const date = new Date().toISOString().slice(0, 10);
+        const file = new File([new Blob([JSON.stringify(rows, null, 1)], { type: "application/json" })],
+          `registry-lookup-${date}.json`, { type: "application/json" });
+        state.newFile = file;
+        document.getElementById("newFileName").textContent = `${file.name} (${formatBytes(file.size)})`;
+        updateSourceAuxiliaryUi();
+        await previewAndDetectFormat(file);
+        clearPreparedTrials("Registry source ready. Load trial rows to review before processing.");
+        const unverified = rows.filter(r => !r.verified).length;
+        setStatus(unverified ? "warn" : "ok",
+          `Found ${rows.length} trial${rows.length === 1 ? "" : "s"}${unverified ? `; ${unverified} with criteria from Copilot only: compare them with the register before use (node ingestion/fetch_registries.mjs ${escapeHtml(rows.filter(r => !r.verified).map(r => r.source_id).filter(Boolean).join(" "))})` : ""}.${noteHtml}`);
+        setCtgovRunHint(`Registry source ready: <strong>${escapeHtml(rows.map(r => r.trial_id).join(", "))}</strong>. Use <strong>Load Trial Rows</strong> above to review before processing.`);
+      } catch (err) {
+        setStatus("error", `Lookup failed: ${escapeHtml(err.message)}`);
+      } finally {
+        ctgovBtn.disabled = false;
+        ctgovBtn.textContent = prevLabel;
+      }
+    };
+    document.getElementById("registryCopyPrompt")?.addEventListener("click", async () => {
+      const prompt = manualBox.dataset.prompt || "";
+      let copied = false;
+      try { await navigator.clipboard.writeText(prompt); copied = true; } catch { /* shown for manual copy below */ }
+      const fallback = document.getElementById("registryPromptText");
+      fallback.value = prompt;
+      fallback.classList.toggle("hidden", copied);
+      if (!copied) fallback.select();
+      window.open("https://m365.cloud.microsoft/chat", "_blank", "noopener");
+    });
+    document.getElementById("registryUseAnswer")?.addEventListener("click", () => {
+      const text = document.getElementById("registryAnswer").value.trim();
+      if (!text) { setStatus("warn", "Paste Copilot's answer first."); return; }
+      if (manualQueries) triggerRegistryLookup(manualQueries, text);
+    });
     ctgovBtn.addEventListener("click", trigger);
     ctgovInput.addEventListener("keydown", (e) => { if (e.key === "Enter") trigger(); });
     document.querySelectorAll(".ctgov-example").forEach((btn) => {
@@ -893,6 +1027,14 @@ function bindManualUploads() {
       });
     });
   }
+}
+
+// "NCT01234567 NCT07654321, PRECODE-MRI; NL-OMON52643" -> each id on its own; free text stays one query.
+function parseRegistryQueries(text) {
+  return String(text || "").split(/[,;\n]+/).map(s => s.trim()).filter(Boolean).flatMap(part => {
+    const words = part.split(/\s+/);
+    return words.every(w => registryKind(w)) ? words : [part];
+  });
 }
 
 // Read the first row to detect format and surface any obvious problems.
@@ -962,6 +1104,7 @@ async function previewAndDetectFormat(f) {
       const label = state.format === "trialgpt" ? "TrialGPT JSON"
                   : state.format === "ctgov"    ? "ClinicalTrials.gov v2 JSON"
                   : state.format === "trialschema" ? "TrialSchema JSON"
+                  : state.format === "registry" ? "Registry criteria"
                   :                                "Org-specific JSON";
       setFormatBanner("ok", `Detected <strong>${label}</strong> &middot; ${arr.length} rows.`);
       return;
@@ -1123,6 +1266,11 @@ function parseTextByExt(name, text) {
   return [];
 }
 
+// Spreadsheet rows and registry rows share the template columns (trial_id, trial, inclusion, exclusion, active, ...).
+function isRowSourceFormat(sf) {
+  return sf === "spreadsheet" || sf === "registry";
+}
+
 function wrapRaw(obj) {
   return { __raw: obj, __sourceFormat: state.format };
 }
@@ -1136,7 +1284,7 @@ function previewIdAndTitle(raw) {
       meta: raw.__workspaceMeta.meta || "",
     };
   }
-  if (state.format === "spreadsheet" || raw.__sourceFormat === "spreadsheet") {
+  if (isRowSourceFormat(state.format) || isRowSourceFormat(raw.__sourceFormat)) {
     const r = raw.__raw || {};
     return {
       id: r.trial_id || r.trial || cryptoSlug(JSON.stringify(r).slice(0, 80)),
@@ -1495,6 +1643,18 @@ function buildUserPrompt(raw) {
       "```",
     ].join("\n");
   }
+  if (sf === "registry") {
+    return [
+      "SOURCE FORMAT: Public trial-registry record (ClinicalTrials.gov, the Dutch register onderzoekmetmensen.nl, or EU CTIS).",
+      "`inclusion` and `exclusion` hold the registry's eligibility text; treat it as the verbatim source and parse one Criterion per line/bullet.",
+      "Use `trial_id` as trial_id and `trial` as the title. `active` is the local matching switch; `start_date`/`completion_date` are matching-window dates when present.",
+      "`source`, `source_url`, `registry_ids`, `own_site`, `sites_nl`, `protocol_publications` and `notes` are provenance: do not turn them into criteria.",
+      "Registry record:",
+      "```json",
+      JSON.stringify(raw.__raw, null, 2),
+      "```",
+    ].join("\n");
+  }
   if (sf === "ctgov") {
     return buildCtgovPrompt(raw.__raw);
   }
@@ -1647,7 +1807,12 @@ function latestCopilotText(payload) {
 }
 
 async function graphFetchJson(url, { method = "POST", body, signal } = {}) {
-  if (!state.copilotToken) throw new Error("Missing Microsoft Graph access token. Paste it in the header.");
+  if (msSession()) state.copilotToken = await msAccessToken();
+  if (!state.copilotToken) throw new Error(missingCredentialText());
+  const pasted = !msSession() && graphTokenInfo(state.copilotToken);
+  if (pasted?.expired) {
+    throw new Error(`The pasted Copilot token expired at ${new Date(pasted.expiresAt).toLocaleTimeString()}. Get a new one from Graph Explorer (token help) and paste it.`);
+  }
   const res = await fetch(url, {
     method,
     headers: {
@@ -1734,7 +1899,12 @@ function copilotTokenScopeDiagnostics() {
     : " Token check: the required delegated scopes appear to be present; verify the user's Microsoft 365 Copilot license and tenant access.";
 }
 
-function copilotChatPayload(prompt, { strictWebOff = true } = {}) {
+function copilotChatPayload(prompt, { strictWebOff = true, web = false } = {}) {
+  if (web) {
+    return strictWebOff
+      ? { message: { text: prompt }, locationHint: { timeZone: copilotTimeZone() }, contextualResources: { webContext: { isWebEnabled: true } } }
+      : { message: { text: prompt }, locationHint: { timeZone: copilotTimeZone() } };
+  }
   const text = strictWebOff
     ? prompt
     : `${prompt}\n\nUse only the trial text provided above. Do not browse or use external context.`;
@@ -1750,18 +1920,18 @@ function copilotChatPayload(prompt, { strictWebOff = true } = {}) {
       };
 }
 
-async function callCopilotChat(conversationId, prompt, signal) {
+async function callCopilotChat(conversationId, prompt, signal, { web = false } = {}) {
   const url = `https://graph.microsoft.com/beta/copilot/conversations/${encodeURIComponent(conversationId)}/chat`;
   try {
     return await graphFetchJson(url, {
-      body: copilotChatPayload(prompt),
+      body: copilotChatPayload(prompt, { web }),
       signal,
     });
   } catch (err) {
     if (err?.status !== 403) throw err;
     try {
       return await graphFetchJson(url, {
-        body: copilotChatPayload(prompt, { strictWebOff: false }),
+        body: copilotChatPayload(prompt, { strictWebOff: false, web }),
         signal,
       });
     } catch (fallbackErr) {
@@ -1773,7 +1943,7 @@ async function callCopilotChat(conversationId, prompt, signal) {
   }
 }
 
-async function callCopilotJson({ system, user, signal }) {
+async function callCopilotJson({ system, user, signal, web = false }) {
   const conversation = await graphFetchJson("https://graph.microsoft.com/beta/copilot/conversations", {
     body: {},
     signal,
@@ -1786,8 +1956,292 @@ async function callCopilotJson({ system, user, signal }) {
     "",
     formatPromptForManualLLM(system, user),
   ].join("\n");
-  const response = await callCopilotChat(conversationId, prompt, signal);
+  const response = await callCopilotChat(conversationId, prompt, signal, { web });
   return parseModelJson(latestCopilotText(response), "Microsoft 365 Copilot");
+}
+
+/* ===================== MICROSOFT SIGN-IN (Copilot) ===================== */
+// Authorization code + PKCE in a pop-up, no library and no backend. The site's Entra app registration
+// (tools/register-entra-app.sh) sets microsoftClientId in config.js; without it the app falls back to a pasted token.
+// The session (access + refresh token) lives in sessionStorage: it ends with the tab and is never exported.
+
+const MS_SESSION_STORAGE = "trialschema.ms.session";
+const MS_GRAPH_SCOPES = COPILOT_CHAT_REQUIRED_SCOPES.map(s => `https://graph.microsoft.com/${s}`);
+const MS_SCOPE = [...MS_GRAPH_SCOPES, "openid", "profile", "offline_access"].join(" ");
+
+function msConfig() {
+  const c = (typeof window !== "undefined" && window.TRIALSCHEMA_CONFIG) || {};
+  return {
+    clientId: String(c.microsoftClientId || "").trim(),
+    authority: String(c.microsoftAuthority || "https://login.microsoftonline.com/organizations").replace(/\/+$/, ""),
+  };
+}
+
+function msRedirectUri() {
+  return new URL("auth.html", location.href.split(/[?#]/)[0]).href;
+}
+
+function msSession() {
+  try {
+    const v = JSON.parse(sessionStorage.getItem(MS_SESSION_STORAGE) || "null");
+    return v && v.access_token ? v : null;
+  } catch { return null; }
+}
+
+function msSaveSession(v) {
+  try {
+    if (v) sessionStorage.setItem(MS_SESSION_STORAGE, JSON.stringify(v));
+    else sessionStorage.removeItem(MS_SESSION_STORAGE);
+  } catch { /* storage blocked: the session lasts only in memory for this call */ }
+}
+
+function b64url(bytes) {
+  let bin = "";
+  bytes.forEach(b => { bin += String.fromCharCode(b); });
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+async function msTokenRequest(authority, params) {
+  const res = await fetch(`${authority}/oauth2/v2.0/token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ client_id: msConfig().clientId, scope: MS_SCOPE, ...params }),
+  });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(`Microsoft sign-in: ${String(j.error_description || j.error || `HTTP ${res.status}`).split(/\r?\n/)[0]}`);
+  return j;
+}
+
+function msSessionFrom(tok, previous = null) {
+  const claims = decodeJwtPayload(tok.id_token) || {};
+  return {
+    access_token: tok.access_token,
+    refresh_token: tok.refresh_token || previous?.refresh_token || "",
+    expires_at: Date.now() + (Number(tok.expires_in) || 3600) * 1000,
+    tenant: claims.tid || previous?.tenant || "",
+    username: claims.preferred_username || claims.email || previous?.username || "",
+  };
+}
+
+async function msSignIn() {
+  const cfg = msConfig();
+  if (!cfg.clientId) throw new Error("Microsoft sign-in is not set up for this site (see tools/register-entra-app.sh).");
+  const verifier = b64url(crypto.getRandomValues(new Uint8Array(32)));
+  const challenge = b64url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
+  const nonce = b64url(crypto.getRandomValues(new Uint8Array(16)));
+  const redirect = msRedirectUri();
+  const url = `${cfg.authority}/oauth2/v2.0/authorize?` + new URLSearchParams({
+    client_id: cfg.clientId, response_type: "code", redirect_uri: redirect, scope: MS_SCOPE, response_mode: "query",
+    code_challenge: challenge, code_challenge_method: "S256", state: nonce, prompt: "select_account",
+  });
+  const popup = window.open(url, "trialschema-signin", "width=480,height=680");
+  if (!popup) throw new Error("The browser blocked the sign-in window. Allow pop-ups for this site and try again.");
+  const params = await new Promise((resolve, reject) => {
+    const started = Date.now();
+    const timer = setInterval(() => {
+      if (popup.closed) { clearInterval(timer); reject(new Error("Sign-in window was closed.")); return; }
+      if (Date.now() - started > 5 * 60 * 1000) { clearInterval(timer); popup.close(); reject(new Error("Sign-in timed out.")); return; }
+      let href = "";
+      try { href = popup.location.href; } catch { return; } // still on the Microsoft page (other origin)
+      if (!href.startsWith(redirect)) return;
+      clearInterval(timer);
+      popup.close();
+      resolve(new URL(href).searchParams);
+    }, 250);
+  });
+  if (params.get("error")) throw new Error(`Microsoft sign-in: ${params.get("error_description") || params.get("error")}`);
+  if (params.get("state") !== nonce) throw new Error("Microsoft sign-in: the response did not match this request.");
+  const tok = await msTokenRequest(cfg.authority, {
+    grant_type: "authorization_code", code: params.get("code") || "", redirect_uri: redirect, code_verifier: verifier,
+  });
+  const session = msSessionFrom(tok);
+  msSaveSession(session);
+  state.copilotToken = session.access_token;
+  return session;
+}
+
+// A valid access token, refreshed silently when it expires within five minutes.
+async function msAccessToken() {
+  const s = msSession();
+  if (!s) return "";
+  if (s.expires_at - Date.now() > 5 * 60 * 1000) return s.access_token;
+  if (!s.refresh_token) { msSaveSession(null); throw new Error("Your Microsoft sign-in expired. Sign in again."); }
+  const authority = s.tenant ? `https://login.microsoftonline.com/${s.tenant}` : msConfig().authority;
+  try {
+    const next = msSessionFrom(await msTokenRequest(authority, { grant_type: "refresh_token", refresh_token: s.refresh_token }), s);
+    msSaveSession(next);
+    return next.access_token;
+  } catch (e) {
+    msSaveSession(null);
+    throw new Error(`${e.message} Sign in again.`);
+  }
+}
+
+function msSignOut() {
+  msSaveSession(null);
+  state.copilotToken = localStorage.getItem(COPILOT_TOKEN_STORAGE) || "";
+}
+
+/* ================ REGISTRY LOOKUP (Copilot with web search) ================ */
+// The Dutch register and CTIS do not answer browser requests (CORS), so the app cannot read them directly.
+// Copilot (web search on) finds the registry records for trial names or ids and copies their criteria; the app then
+// fetches ClinicalTrials.gov itself whenever an NCT id is known, and replaces Copilot's text with the verbatim record.
+// Rows Copilot alone provided stay marked verified:false until ingestion/fetch_registries.mjs confirms them.
+
+// true when a listed site contains one of the configured site names, false when none does, null when unknown.
+function ownSite(sites, names = state.siteNames) {
+  const ns = (names || []).map(n => String(n).trim().toLowerCase()).filter(Boolean);
+  if (!ns.length || !sites?.length) return null;
+  return sites.some(s => ns.some(n => String(s).toLowerCase().includes(n)));
+}
+
+function buildRegistryLookupPrompt(queries, siteNames = state.siteNames) {
+  const system = [
+    "You find public clinical-trial registry records for a hospital in the Netherlands and copy their eligibility criteria.",
+    "Search these registers on the web: ClinicalTrials.gov (NCT ids), the Dutch register onderzoekmetmensen.nl (NL-OMON ids; it replaced trialregister.nl and the public part of ToetsingOnline/CCMO, NL numbers), and EU CTIS on euclinicaltrials.eu (EU CT numbers yyyy-nnnnnn-nn-nn).",
+    "Rules:",
+    "- Copy inclusion and exclusion criteria verbatim from the registry page, one criterion per line. Never paraphrase, translate, shorten, complete or invent criteria.",
+    "- If you cannot read the criteria on the page, leave inclusion and exclusion empty and say so in notes.",
+    "- List only registry ids and URLs you actually saw. Several candidate records: pick the best match and list the others in notes.",
+    siteNames.length
+      ? `- own_site: true when one of these is a listed participating site: ${siteNames.join("; ")} (name match, any capitalisation; other centres in the same city do not count); false when sites are listed without them; null when unknown.`
+      : "- own_site: always null.",
+    "- protocol_publications: published study protocols (journal article) for this trial, with DOI or PubMed id when known.",
+    "Return strict JSON only: {\"results\": [ ... one object per query, in query order ... ]}.",
+    "Each object: {\"query\": string, \"found\": boolean, \"trial_id\": short acronym, \"trial\": official title, \"registry_ids\": [string],",
+    "\"source_id\": id of the page the criteria were copied from, \"source_url\": that page's URL, \"status\": recruitment status,",
+    "\"own_site\": true|false|null, \"sites_nl\": [string], \"condition\": string, \"start_date\": \"YYYY-MM-DD\" or \"\", \"completion_date\": \"YYYY-MM-DD\" or \"\",",
+    "\"inclusion\": string, \"exclusion\": string, \"protocol_publications\": [{\"title\": string, \"doi\": string, \"pmid\": string, \"url\": string}], \"notes\": string}.",
+  ].join("\n");
+  const user = ["Trials to look up (acronym, title or registry id):", ...queries.map((q, i) => `${i + 1}. ${q}`)].join("\n");
+  return { system, user };
+}
+
+// Own-site names: set in the Registries panel, kept in this browser and in the export's workspace extension.
+const SITE_NAMES_STORAGE = "trialschema.site_names";
+const DEFAULT_SITE_NAMES = Object.freeze(["Maastro"]); // until the user edits it; an emptied field stays empty
+
+function normalizeSiteNames(value) {
+  const list = Array.isArray(value) ? value : String(value || "").split(/[,;\n]+/);
+  return Array.from(new Set(list.map(s => String(s).trim()).filter(Boolean)));
+}
+
+function setSiteNames(value, { save = true } = {}) {
+  state.siteNames = normalizeSiteNames(value);
+  if (save) { try { localStorage.setItem(SITE_NAMES_STORAGE, JSON.stringify(state.siteNames)); } catch {} }
+  const input = document.getElementById("siteNamesInput");
+  if (input && document.activeElement !== input) input.value = state.siteNames.join(", ");
+}
+
+function loadSiteNames() {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(SITE_NAMES_STORAGE) ?? "null"); } catch {}
+  setSiteNames(Array.isArray(saved) ? saved : DEFAULT_SITE_NAMES, { save: false });
+  document.getElementById("siteNamesInput")?.addEventListener("change", (e) => setSiteNames(e.target.value));
+}
+
+function ctgovRegistryRow(study) {
+  const p = study?.protocolSection || {};
+  const text = p.eligibilityModule?.eligibilityCriteria || "";
+  const parts = text.split(/exclusion criteria:?/i);
+  const status = p.statusModule?.overallStatus || "";
+  const locs = p.contactsLocationsModule?.locations || [];
+  const nl = locs.filter(l => /netherlands/i.test(l.country || ""));
+  const nct = p.identificationModule?.nctId || "";
+  return {
+    trial_id: p.identificationModule?.acronym || nct,
+    trial: p.identificationModule?.officialTitle || p.identificationModule?.briefTitle || "",
+    inclusion: (parts[0] || "").replace(/inclusion criteria:?/i, "").trim(),
+    exclusion: (parts.slice(1).join("Exclusion Criteria:") || "").trim(),
+    active: ["RECRUITING", "NOT_YET_RECRUITING", "ENROLLING_BY_INVITATION", "ACTIVE_NOT_RECRUITING"].includes(status),
+    condition: (p.conditionsModule?.conditions || []).join("; "),
+    start_date: p.statusModule?.startDateStruct?.date || "",
+    completion_date: p.statusModule?.completionDateStruct?.date || "",
+    status,
+    source: "ctgov",
+    source_id: nct,
+    source_url: `https://clinicaltrials.gov/study/${nct}`,
+    sites_nl: nl.map(l => [l.facility, l.city].filter(Boolean).join(", ")),
+    own_site: ownSite(locs.map(l => [l.facility, l.city].filter(Boolean).join(", "))),
+  };
+}
+
+async function fetchCtgovStudy(nct, signal) {
+  const r = await fetch(`https://clinicaltrials.gov/api/v2/studies/${nct}?format=json`, { headers: { "Accept": "application/json" }, signal });
+  if (!r.ok) throw new Error(`${nct}: HTTP ${r.status}`);
+  return r.json();
+}
+
+// Merge Copilot's answer with the verbatim ClinicalTrials.gov record when an NCT id is known.
+function mergeRegistryRow(copilotRow, ctgovRow, retrievedAt) {
+  const base = { ...copilotRow };
+  delete base.query; delete base.found;
+  const ids = [...new Set([...(copilotRow.registry_ids || []), copilotRow.source_id].filter(Boolean).map(s => String(s).trim()))];
+  if (ctgovRow) {
+    return {
+      ...base, ...ctgovRow,
+      trial_id: copilotRow.trial_id || ctgovRow.trial_id,
+      registry_ids: ids.filter(id => id.toUpperCase() !== ctgovRow.source_id),
+      own_site: ctgovRow.own_site ?? (state.siteNames.length ? copilotRow.own_site ?? null : null),
+      sites_nl: ctgovRow.sites_nl?.length ? ctgovRow.sites_nl : (copilotRow.sites_nl || []),
+      retrieved_at: retrievedAt, retrieved_by: "registry", verified: true,
+    };
+  }
+  return {
+    ...base,
+    own_site: state.siteNames.length ? (copilotRow.own_site ?? null) : null,
+    registry_ids: ids.filter(id => id !== copilotRow.source_id),
+    source: registryKind(copilotRow.source_id) || "web",
+    retrieved_at: retrievedAt, retrieved_by: "copilot-web", verified: false,
+  };
+}
+
+// queries: trial names or registry ids. Returns { rows, notes } and, when Copilot is not connected, manual: { prompt }
+// so the user can ask Copilot Chat (or any chatbot with web search) and paste the answer back (pastedAnswer).
+async function registryLookup(queries, { signal, onStatus = () => {}, pastedAnswer } = {}) {
+  const retrievedAt = new Date().toISOString();
+  const rows = [], notes = [];
+  const nctOnly = queries.filter(q => registryKind(q) === "ctgov");
+  const viaCopilot = queries.filter(q => registryKind(q) !== "ctgov");
+  for (const nct of nctOnly) {
+    onStatus(`Fetching ${nct} from ClinicalTrials.gov…`);
+    rows.push({ ...ctgovRegistryRow(await fetchCtgovStudy(nct.toUpperCase(), signal)), retrieved_at: retrievedAt, retrieved_by: "registry", verified: true });
+  }
+  if (!viaCopilot.length) return { rows, notes };
+  const { system, user } = buildRegistryLookupPrompt(viaCopilot);
+  const connected = state.llmProvider === "copilot" && hasLLMCredentials();
+  if (pastedAnswer === undefined && !connected) {
+    return { rows, notes, manual: { prompt: formatPromptForManualLLM(system, user), queries: viaCopilot } };
+  }
+  let answer;
+  if (pastedAnswer !== undefined) {
+    answer = parseModelJson(pastedAnswer, "The pasted answer");
+  } else {
+    onStatus(`Asking Copilot to find ${viaCopilot.length} trial${viaCopilot.length === 1 ? "" : "s"} in the registers…`);
+    answer = await callCopilotJson({ system, user, signal, web: true });
+  }
+  const results = Array.isArray(answer?.results) ? answer.results : [];
+  for (const [i, q] of viaCopilot.entries()) {
+    const r = results.find(x => String(x?.query || "").trim().toLowerCase() === q.toLowerCase()) || results[i];
+    if (!r || r.found === false || !(r.inclusion || r.exclusion || r.registry_ids?.length)) {
+      notes.push(`${q}: not found${r?.notes ? ` (${r.notes})` : ""}`);
+      continue;
+    }
+    const nct = [r.source_id, ...(r.registry_ids || [])].find(id => registryKind(id) === "ctgov");
+    let ct = null;
+    if (nct) {
+      onStatus(`Checking ${nct} against ClinicalTrials.gov…`);
+      try { ct = ctgovRegistryRow(await fetchCtgovStudy(String(nct).toUpperCase(), signal)); }
+      catch (e) { notes.push(`${q}: ${e.message}; kept Copilot's text`); }
+    }
+    const row = mergeRegistryRow({ ...r, query: q }, ct, retrievedAt);
+    if (!row.verified && pastedAnswer !== undefined) row.retrieved_by = "chat-paste";
+    if (!row.inclusion && !row.exclusion) { notes.push(`${q}: record found but no criteria (${row.source_url || "no URL"})`); continue; }
+    if (!row.verified) notes.push(`${q}: criteria from Copilot (${row.source_id || "web"}), not yet checked against the register`);
+    if (r.notes) notes.push(`${q}: ${r.notes}`);
+    rows.push(row);
+  }
+  return { rows, notes };
 }
 
 async function callLLMJson({ system, user, signal }) {
@@ -1810,7 +2264,8 @@ function applySourceFields(trial, raw, { applyEnabled = true } = {}) {
   if (!trial) return trial;
   const enabled = sourceTrialEnabled(raw);
   if (applyEnabled && enabled !== null) trial.enabled = enabled;
-  if (raw?.__sourceFormat !== "spreadsheet") return trial;
+  applyRegistrySource(trial, raw?.__raw || raw);
+  if (!isRowSourceFormat(raw?.__sourceFormat)) return trial;
 
   const row = raw.__raw || {};
   trial.metadata = trial.metadata || {};
@@ -1822,6 +2277,45 @@ function applySourceFields(trial, raw, { applyEnabled = true } = {}) {
   m.lifecycle_dates = m.lifecycle_dates || {};
   m.lifecycle_dates.start_date = isoDate(row.start_date);
   m.lifecycle_dates.completion_date = isoDate(row.completion_date);
+  return trial;
+}
+
+// Registry rows (ingestion/fetch_registries.mjs or the Copilot registry lookup) carry source_id/source_url and
+// optionally other registry ids, own-site status and protocol publications. They become trial identifiers plus
+// an org.trialschema.source extension, so provenance travels with the export.
+const REGISTRY_SYSTEMS = Object.freeze({
+  ctgov: "https://clinicaltrials.gov",
+  nl: "https://onderzoekmetmensen.nl",
+  ctis: "https://euclinicaltrials.eu",
+});
+const SOURCE_EXT_KEY = "org.trialschema.source";
+
+function registryKind(id) {
+  const s = String(id || "").trim();
+  if (/^NCT\d{8}$/i.test(s)) return "ctgov";
+  if (/^NL-?OMON\d+$/i.test(s) || /^NL\d{4,}$/i.test(s)) return "nl";
+  if (/^\d{4}-\d{6}-\d{2}-\d{2}$/.test(s)) return "ctis";
+  return null;
+}
+
+function registryIdentifiers(row) {
+  const ids = [row?.source_id, ...(Array.isArray(row?.registry_ids) ? row.registry_ids : [])];
+  return normalizeIdentifiers(ids.map(id => {
+    const k = registryKind(id);
+    return k ? { system: REGISTRY_SYSTEMS[k], value: String(id).trim().toUpperCase() } : null;
+  }).filter(Boolean));
+}
+
+function applyRegistrySource(trial, row) {
+  if (!trial || !row || typeof row !== "object" || !(row.source_url || row.source_id)) return trial;
+  const ids = registryIdentifiers(row);
+  if (ids.length) trial.identifiers = normalizeIdentifiers([...(trial.identifiers || []), ...ids]);
+  const ext = {};
+  for (const k of ["source", "source_id", "source_url", "retrieved_at", "retrieved_by", "verified", "status",
+                   "own_site", "sites_nl", "protocol_publications", "notes"]) {
+    if (row[k] !== undefined && row[k] !== "" && row[k] !== null) ext[k] = row[k];
+  }
+  trial.foreign_extensions = { ...(trial.foreign_extensions || {}), [SOURCE_EXT_KEY]: ext };
   return trial;
 }
 
@@ -1865,7 +2359,29 @@ function sanitizeTrial(t) {
   // and whether a human hand-edited it in the workspace. Persisted on export
   // and restored on import so manual work is never lost or repeated.
   t.edit_state = normalizeEditState(t.edit_state);
+  // Registry identifiers and other tools' extensions survive a round trip.
+  t.identifiers = normalizeIdentifiers(t.identifiers);
+  if (!t.identifiers.length) delete t.identifiers;
+  if (!t.sponsor || typeof t.sponsor !== "object") delete t.sponsor;
+  t.foreign_extensions = foreignExtensions(t.foreign_extensions);
+  if (!t.foreign_extensions) delete t.foreign_extensions;
   return t;
+}
+
+// Extensions other than the app's own workspace key, kept verbatim on import and written back on export.
+function foreignExtensions(ext) {
+  if (!ext || typeof ext !== "object" || Array.isArray(ext)) return null;
+  const out = {};
+  for (const [k, v] of Object.entries(ext)) if (k !== WORKSPACE_EXT_KEY && v !== undefined) out[k] = v;
+  return Object.keys(out).length ? out : null;
+}
+
+function normalizeIdentifiers(list) {
+  const seen = new Set();
+  return (Array.isArray(list) ? list : [])
+    .filter(i => i && typeof i.system === "string" && i.system && i.value !== undefined && String(i.value).trim())
+    .map(i => ({ system: i.system, value: String(i.value).trim() }))
+    .filter(i => { const k = `${i.system}|${i.value}`; if (seen.has(k)) return false; seen.add(k); return true; });
 }
 
 // Normalize an edit-state record. Accepts partial shapes and always returns
@@ -1992,7 +2508,7 @@ function sanitizeCriterion(c, i) {
   // store it temporarily; sanitizeTrial then re-numbers all criteria as
   // sequential 1..N ranks based on their post-sort position in the list.
   let prio = Number.isFinite(+c.priority_level) ? Math.round(+c.priority_level) : 3;
-  if (prio < 1) prio = 1; else if (prio > 5) prio = 5;
+  if (prio < 1) prio = 1;
   const out = {
     criterion_id: String(c.criterion_id || `${prefix}-${String(i+1).padStart(2,"0")}`),
     type,
@@ -2018,6 +2534,10 @@ function sanitizeCriterion(c, i) {
       ? c.other_active
       : !!(typeof c.guidance === "string" && c.guidance.trim()),
   };
+  const foreign = foreignExtensions(c.foreign_extensions);
+  if (foreign) out.foreign_extensions = foreign;
+  if (c.provenance && typeof c.provenance === "object") out.provenance = { ...c.provenance };
+  if (c.imported && typeof c.imported === "object") out.imported = c.imported;
   if (out.evaluation_type === "quantitative" && c.structured_target && typeof c.structured_target === "object") {
     const st = c.structured_target;
     out.structured_target = {
@@ -2052,9 +2572,9 @@ function sanitizeCriterion(c, i) {
   // logistics…) auto-mark the Other chip as primary so the free-text guidance
   // textarea is surfaced. Same when the criterion carries an `other_active`
   // flag or existing guidance text.
+  // Explicit routes (import, model output) are kept as given: guidance says how to judge, not where to look.
   const isOther = out.category === "other"
-    || c.other_active === true
-    || (typeof c.guidance === "string" && c.guidance.trim() !== "");
+    || (!llmPrimary.length && !c.imported && (c.other_active === true || (typeof c.guidance === "string" && c.guidance.trim() !== "")));
   if (isOther) primarySeed = ["other", ...primarySeed.filter(d => d !== "other")].slice(0, primaryCap);
   const primarySet = new Set(primarySeed);
   out.routing.primary_docs = Array.from(primarySet).filter(d => isKnownDocId(d));
@@ -2062,7 +2582,19 @@ function sanitizeCriterion(c, i) {
   const fbSet = new Set([...llmFallback, ...llmPrimary.slice(3)]);
   out.routing.primary_docs.forEach(d => fbSet.delete(d));
   out.routing.fallback_docs = Array.from(fbSet).filter(d => isKnownDocId(d));
+  // An imported criterion without routes means "use the default scan set" (TrialSchema semantics); keep it empty.
+  if (out.imported && !llmPrimary.length) {
+    out.routing.primary_docs = [];
+    out.routing.fallback_docs = llmFallback.filter(d => isKnownDocId(d));
+  }
+  if (out.imported && out.imported.sig === undefined) out.imported = { ...out.imported, sig: criterionEvalSignature(out) };
   return out;
+}
+
+// What the exported concept/constraint are derived from. While it matches the imported criterion, the imported
+// concept and constraint are written back unchanged instead of being rebuilt.
+function criterionEvalSignature(c) {
+  return JSON.stringify([String(c.original_text || ""), c.evaluation_type, c.structured_target || null]);
 }
 
 function isoDate(s) {
@@ -4247,7 +4779,7 @@ function buildCriterionRow(trial, c, ci, mode = currentCriteriaStep()) {
         </span>
       </div>
       <div class="flex flex-wrap gap-1.5" data-routing></div>
-      <div data-other-guidance class="${otherActiveNow() ? "" : "hidden"} mt-2">
+      <div data-other-guidance class="${otherActiveNow() || String(c.guidance || "").trim() ? "" : "hidden"} mt-2">
         <textarea data-guidance list="${guidanceListId}" rows="2"
           placeholder="Free-text guidance for the matching agent (e.g. 'check signed consent form is on file')"
           class="w-full text-[12px] rounded-md border border-amber-200 bg-amber-50/40 focus:bg-white focus:border-amber-400 focus:outline-none px-2.5 py-1.5 resize-y">${escapeHtml(c.guidance||"")}</textarea>
@@ -4323,7 +4855,7 @@ function buildCriterionRow(trial, c, ci, mode = currentCriteriaStep()) {
       renderMatrixCell(chip, c, d, () => {
         markTrialEdited(trial);
         if (d.id === "other" && otherGuidance) {
-          otherGuidance.classList.toggle("hidden", !otherActiveNow());
+          otherGuidance.classList.toggle("hidden", !otherActiveNow() && !String(c.guidance || "").trim());
           if (otherActiveNow()) {
             refreshGuidanceSuggestions(card.querySelector("[data-guidance-list]"), c);
             card.querySelector("[data-guidance]")?.focus();
@@ -4804,12 +5336,22 @@ function tsv1ParseCode(raw) {
   if (!raw) return null;
   const s = String(raw).trim();
   if (!s) return null;
-  const m = s.match(/^([A-Za-z][A-Za-z0-9-]*)\s*[:|]\s*(.+)$/);
+  const uri = s.match(/^(https?:\/\/[^|\s]+)\s*\|\s*(.+)$/);
+  if (uri) return { system: uri[1], code: uri[2].trim() };
+  const m = s.match(/^([A-Za-z][A-Za-z0-9.-]*)\s*[:|]\s*(.+)$/);
   if (m) {
-    const sys = TS_V1.TERMINOLOGY_SYSTEMS[m[1].toUpperCase()];
+    const key = m[1].toUpperCase().replace(/\.(ORG|INFO|COM)$/, "").replace(/^SNOMED\.INFO\/SCT$/, "SNOMED");
+    const sys = TS_V1.TERMINOLOGY_SYSTEMS[key]
+      || Object.values(TS_V1.TERMINOLOGY_SYSTEMS).find(u => u.replace(/^https?:\/\/(www\.)?/, "").toUpperCase() === m[1].toUpperCase());
     if (sys) return { system: sys, code: m[2].trim() };
   }
-  return { code: s };
+  // A code without a known system is not a valid Coding on its own (schema anyOf); keep it as text.
+  return { text: s };
+}
+
+function tsv1SystemShortName(system) {
+  const hit = Object.entries(TS_V1.TERMINOLOGY_SYSTEMS).find(([, u]) => u === system);
+  return hit ? hit[0] : String(system || "").split("/").pop();
 }
 
 function tsv1Coding(parts) {
@@ -4870,12 +5412,19 @@ function tsv1Constraint(c) {
 
 function tsv1Criterion(c, idx) {
   const doc = docById(c.category);
-  const concept = {
-    domain: doc?.concept_domain || TS_V1.DOMAIN_FOR_CATEGORY[c.category] || "other",
-  };
-  const code = tsv1ParseCode(c.structured_target?.standard_code);
-  if (code) concept.code = tsv1Coding(code);
-  if (c.structured_target?.metric) concept.text = String(c.structured_target.metric);
+  const imp = c.imported && typeof c.imported === "object" ? c.imported : null;
+  const unchanged = !!imp && imp.sig === criterionEvalSignature(c);
+  let concept;
+  if (imp?.concept && typeof imp.concept === "object" && (unchanged || !c.structured_target)) {
+    concept = JSON.parse(JSON.stringify(imp.concept));
+  } else {
+    concept = { domain: imp?.concept?.domain || doc?.concept_domain || TS_V1.DOMAIN_FOR_CATEGORY[c.category] || "other" };
+    const code = tsv1ParseCode(c.structured_target?.standard_code);
+    if (code) concept.code = tsv1Coding(code);
+    if (c.structured_target?.metric) concept.text = String(c.structured_target.metric);
+  }
+  const constraint = unchanged && imp.constraint && typeof imp.constraint === "object"
+    ? JSON.parse(JSON.stringify(imp.constraint)) : tsv1Constraint(c);
   return {
     id: c.criterion_id,
     kind: c.type === "exclusion" ? "exclusion" : "inclusion",
@@ -4886,19 +5435,25 @@ function tsv1Criterion(c, idx) {
       ? String(c.original_text) : null,
     concept,
     assertion: ["present", "absent", "unknown"].includes(c.assertion) ? c.assertion : "present",
-    constraint: tsv1Constraint(c),
+    constraint,
     ...(c.timing !== undefined ? { timing: validateTiming(c.timing) } : {}),
-    ...(c.timing_reviewed ? { extensions: { [WORKSPACE_EXT_KEY]: { timing_reviewed: true } } } : {}),
+    ...(tsv1CriterionExtensions(c) ? { extensions: tsv1CriterionExtensions(c) } : {}),
     routing: {
       primary:  (c.routing?.primary_docs  || []).map(d => coerceDocIdToProfile(d)).filter(Boolean).map(tsv1WireDocId),
       fallback: (c.routing?.fallback_docs || []).map(d => coerceDocIdToProfile(d)).filter(Boolean).map(tsv1WireDocId),
     },
     guidance: typeof c.guidance === "string" ? c.guidance : "",
-    provenance: {
-      extracted_at: new Date().toISOString(),
-      extracted_by: activeAIByline(),
-    },
+    // Keep imported provenance; only criteria without one are stamped with the current provider.
+    provenance: c.provenance && typeof c.provenance === "object" && Object.keys(c.provenance).length
+      ? { ...c.provenance }
+      : { extracted_at: new Date().toISOString(), extracted_by: activeAIByline() },
   };
+}
+
+function tsv1CriterionExtensions(c) {
+  const out = { ...(c.foreign_extensions || {}) };
+  if (c.timing_reviewed) out[WORKSPACE_EXT_KEY] = { timing_reviewed: true };
+  return Object.keys(out).length ? out : null;
 }
 
 function tsv1Trial(t) {
@@ -4917,6 +5472,9 @@ function tsv1Trial(t) {
     conditions,
     interventions,
   };
+  const identifiers = normalizeIdentifiers(t.identifiers);
+  if (identifiers.length) out.identifiers = identifiers;
+  if (t.sponsor && typeof t.sponsor === "object") out.sponsor = t.sponsor;
   const lifecycle = {};
   if (ld.start_date) lifecycle.start_date = ld.start_date;
   if (ld.completion_date) lifecycle.completion_date = ld.completion_date;
@@ -4939,6 +5497,8 @@ function tsv1Trial(t) {
     if (es.ai_by)     out.provenance.ai_by = es.ai_by;
     if (es.manual_at) out.provenance.edited_at = es.manual_at;
   }
+  const foreign = foreignExtensions(t.foreign_extensions);
+  if (foreign) out.extensions = foreign;
   return out;
 }
 
@@ -4960,7 +5520,9 @@ function tsv1WorkspaceExtension(workspace) {
     });
   }
   if (normalized.archived_trial_ids.length) out.archived_trial_ids = normalized.archived_trial_ids;
-  return (out.pending_trials?.length || out.archived_trial_ids?.length) ? out : null;
+  const siteNames = normalizeSiteNames(state.siteNames);
+  if (siteNames.length) out.site_names = siteNames;
+  return (out.pending_trials?.length || out.archived_trial_ids?.length || out.site_names) ? out : null;
 }
 
 function toV1Envelope(trials, workspace = null) {
@@ -4975,7 +5537,9 @@ function toV1Envelope(trials, workspace = null) {
     trials:         trials.map(tsv1Trial),
   };
   const workspaceExt = tsv1WorkspaceExtension(workspace);
-  if (workspaceExt) out.extensions = { [WORKSPACE_EXT_KEY]: workspaceExt };
+  const envelopeExt = { ...(foreignExtensions(state.foreignEnvelopeExtensions) || {}) };
+  if (workspaceExt) envelopeExt[WORKSPACE_EXT_KEY] = workspaceExt;
+  if (Object.keys(envelopeExt).length) out.extensions = envelopeExt;
   return out;
 }
 
@@ -5016,7 +5580,9 @@ function fromV1Trial(v) {
       const sysShort = (c.concept?.code?.system || "").split("/").pop();
       st = {
         metric: c.concept?.text || "",
-        standard_code: c.concept?.code?.code ? `${sysShort}:${c.concept.code.code}` : "",
+        standard_code: c.concept?.code?.code
+          ? (sysShort ? `${tsv1SystemShortName(c.concept.code.system)}:${c.concept.code.code}` : c.concept.code.code)
+          : (c.concept?.code?.text || ""),
         operator: c.constraint.operator,
         value: c.constraint.quantity?.value ?? 0,
         unit: c.constraint.quantity?.unit || "",
@@ -5043,6 +5609,9 @@ function fromV1Trial(v) {
       assertion: ["present", "absent", "unknown"].includes(c.assertion) ? c.assertion : "present",
       ...(c.timing !== undefined ? { timing: validateTiming(c.timing) } : {}),
       timing_reviewed: c.extensions?.[WORKSPACE_EXT_KEY]?.timing_reviewed === true,
+      ...(foreignExtensions(c.extensions) ? { foreign_extensions: foreignExtensions(c.extensions) } : {}),
+      ...(c.provenance && typeof c.provenance === "object" ? { provenance: c.provenance } : {}),
+      imported: { concept: c.concept, constraint: c.constraint },
       routing: {
         primary_docs:  (c.routing?.primary  || []).map(tsv1InternalDocId).map(coerceDocIdToProfile).filter(Boolean),
         fallback_docs: (c.routing?.fallback || []).map(tsv1InternalDocId).map(coerceDocIdToProfile).filter(Boolean),
@@ -5059,6 +5628,9 @@ function fromV1Trial(v) {
     metadata: m,
     care_path_ids: Array.isArray(v.care_path_ids) ? v.care_path_ids : [],
     criteria,
+    identifiers: v.identifiers,
+    sponsor: v.sponsor,
+    foreign_extensions: v.extensions,
     edit_state: v.provenance ? {
       ai: !!v.provenance.ai_processed,
       manual: !!v.provenance.manually_edited,
@@ -5072,6 +5644,9 @@ function fromV1Trial(v) {
 function fromV1Envelope(parsed) {
   if (!parsed || parsed.format !== TS_V1.FORMAT) return null;
   const workspace = normalizeWorkspaceExtension(parsed.extensions?.[WORKSPACE_EXT_KEY]);
+  state.foreignEnvelopeExtensions = foreignExtensions(parsed.extensions);
+  const importedSites = normalizeSiteNames(parsed.extensions?.[WORKSPACE_EXT_KEY]?.site_names || []);
+  if (importedSites.length) setSiteNames(importedSites);
   state.archivedTrialIds = workspace.archived_trial_ids.slice();
   state.routingProfile = fromV1RoutingProfile(parsed.routing_profile);
   saveRoutingProfile();
@@ -5205,6 +5780,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindFilters();
   bindSourceInfoModal();
   bindCopilotTokenHelpModal();
+  loadSiteNames();
   bindRoutingProfileControls();
   bindCarePathControls();
   renderRoutingProfileEditor();
@@ -5212,6 +5788,20 @@ document.addEventListener("DOMContentLoaded", () => {
   updateSourceAuxiliaryUi();
 
   document.getElementById("saveKeyBtn").addEventListener("click", saveApiKey);
+  document.getElementById("msSignInBtn")?.addEventListener("click", toggleMsSignIn);
+  // Copilot token: pasting saves it at once (no Save click); the header counts down to its expiry.
+  document.getElementById("apiKeyInput")?.addEventListener("paste", () => {
+    if (state.llmProvider === "copilot") setTimeout(saveApiKey, 0);
+  });
+  setInterval(() => {
+    if (state.llmProvider !== "copilot" || msSession()) return;
+    const status = document.getElementById("keyStatus");
+    if (!status) return;
+    const st = copilotTokenStatus();
+    status.textContent = st.text;
+    status.className = `text-[11px] ${st.cls}`;
+    updateApiKeyDependentUi();
+  }, 30000);
   document.getElementById("apiKeyInput").addEventListener("keydown", (e) => {
     if (e.key === "Enter") saveApiKey();
   });

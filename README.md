@@ -31,36 +31,37 @@ Then open:
 http://127.0.0.1:5173
 ```
 
-Upload an Excel/CSV/JSON/JSONL source, load rows, and process trials with an OpenAI key or a Microsoft Graph access token for Microsoft 365 Copilot Chat API beta. Without a selected-provider credential, the app supports manual copy/paste LLM mode per trial and per criterion.
+Upload an Excel/CSV/JSON/JSONL source, load rows, and process trials with an OpenAI key or Microsoft 365 Copilot (Copilot Chat API beta). Without a selected-provider credential, the app supports manual copy/paste LLM mode per trial and per criterion.
 
-For Copilot token mode, choose **Copilot token** in the header and paste a short-lived delegated Microsoft Graph bearer token for a work account with a Microsoft 365 Copilot add-on license. The token must include all Microsoft 365 Copilot Chat API delegated scopes: `Sites.Read.All`, `Mail.Read`, `People.Read.All`, `OnlineMeetingTranscript.Read.All`, `Chat.Read`, `ChannelMessage.Read.All`, and `ExternalItem.Read.All`. The app does not attach OneDrive or SharePoint files; it sends the TrialSchema prompt text and requests JSON back.
+### Microsoft 365 Copilot: sign in
 
-### Microsoft 365 Copilot Token Testing
+Choose **Microsoft 365 Copilot** in the header and click **Sign in with Microsoft**. The app signs in with the
+authorization-code + PKCE flow in a pop-up (no library, no backend, no secret), keeps the session in
+`sessionStorage` for that tab and refreshes the token silently. Users need a Microsoft 365 Copilot licence.
 
-Token paste is intended for early testing only. Normal end users should eventually use a built-in **Sign in with Microsoft** flow, because Microsoft Graph access tokens are short-lived and awkward to obtain manually.
+One-off setup per site (the maintainer or IT, not users):
 
-For a test token:
+```bash
+tools/register-entra-app.sh        # az login; creates/updates the "TrialSchema" app registration, writes config.js
+```
 
-1. Open [Microsoft Graph Explorer](https://developer.microsoft.com/graph/graph-explorer) and sign in with the same work account that has Microsoft 365 Copilot API access.
-2. Switch to the `beta` endpoint, choose `POST`, and run `/copilot/conversations` with request body `{}`.
-3. Copy the returned conversation `id`, then run `POST /copilot/conversations/{id}/chat` with a smoke-test body:
+It registers the redirect page `auth.html` (site, `127.0.0.1:5173`, `localhost:5173`) and the Copilot Chat API
+delegated scopes, then prints the admin-consent link: those scopes need consent from a tenant administrator once.
+Publish `config.js` with the site. Without a client id in `config.js` the app shows the token-paste test path below.
 
-   ```json
-   {
-     "message": { "text": "Reply with OK." },
-     "locationHint": { "timeZone": "Europe/Amsterdam" }
-   }
-   ```
+### Copilot token paste (until sign-in is set up)
 
-4. If prompted, use **Modify permissions** or **Consent to permissions**. Tenant admin consent may be required for the Copilot Chat API delegated permission set. Re-copy the token after any consent change.
-5. If Graph Explorer exposes an **Access token** panel/menu, copy the bearer token only after both the conversation create and chat calls work, then paste it into TrialSchema's **Copilot token** field.
-6. If token copy is unavailable in your Graph Explorer experience, use Postman or move straight to MSAL sign-in; end users should not be asked to perform this manual token step.
+Choose **Microsoft 365 Copilot** in the header; without a site sign-in the app opens three steps: open Graph Explorer
+(the link fills in `POST beta /copilot/conversations` with body `{}`), consent to permissions the first time, then copy
+the **Access token** tab and paste it. Pasting saves it at once and the token is found in any copied form (bare,
+`Bearer …`, a header line, JSON, a curl command). The header shows the account and the minutes left, or what is wrong
+(expired, missing permission, not a Graph token); an expired token is never sent. Tokens last about an hour.
 
-If TrialSchema can create a Copilot conversation but the chat call returns `Microsoft Graph HTTP 403`, the `/copilot/conversations` permission check was not enough. Test `POST /copilot/conversations/{id}/chat` with the same account in Graph Explorer. That usually means the user or tenant can reach the Copilot API surface but is still missing one or more required delegated scopes, admin consent, the Microsoft 365 Copilot add-on license, or tenant API entitlement for the chat action. TrialSchema first sends the strict no-web-grounding payload and retries once without the optional web-context block, while still keeping the required `locationHint.timeZone`, so payload compatibility issues are easier to separate from permission failures.
-
-If the chat response contains `It looks like you don't have a valid license`, Graph permissions are not the blocker. Assign or activate the Microsoft 365 Copilot add-on license for the exact signed-in work account, then obtain a fresh Graph token.
-
-If Graph Explorer itself returns `UnknownError` on `POST /copilot/conversations`, the failure is upstream of TrialSchema and happens before any trial prompt is sent. Save the response `request-id`, `client-request-id`, and `date`; those are the values a tenant admin or Microsoft support needs to trace Copilot Chat API availability for that tenant/user.
+The token needs the Copilot Chat API delegated scopes (Sites.Read.All, Mail.Read, People.Read.All,
+OnlineMeetingTranscript.Read.All, Chat.Read, ChannelMessage.Read.All, ExternalItem.Read.All) and a work account with a
+Microsoft 365 Copilot licence. If chat returns HTTP 403, test `POST /copilot/conversations/{id}/chat` in Graph Explorer:
+failing there too means consent, licence or API access is missing. "You don't have a valid license" means the licence,
+not permissions. For `UnknownError` on creating a conversation, keep the request id and date for IT or Microsoft support.
 
 ## Matching-Oriented Criteria
 
@@ -103,6 +104,12 @@ Exports now use `format_version: "1.1"`. Existing 1.0 exports remain valid again
 
 ## Workspace Preservation
 
+Import → export keeps what other tools wrote: unknown `extensions` (envelope, trial, criterion), trial
+`identifiers` and `sponsor`, criterion `provenance`, ranks above 5, explicit and empty routing, and the imported
+`concept` and `constraint` while the criterion's text and structured target are unchanged. Concept codes in forms
+like `loinc.org:2160-0` or `http://loinc.org|2160-0` export as `system` + `code`; a code without a known system
+exports as `text`, so the export stays valid against the schema.
+
 Exports keep agent-facing data and UI workflow state separate:
 
 - `trials[]` contains only processed, structured trials for matching agents. Processed inactive trials remain here with their criteria intact and `enabled: false`.
@@ -113,6 +120,21 @@ When a previous export is merged with a newer source file, reviewed structured t
 
 ## Criteria from public registries
 
+**In the app:** open **Registries**, enter NCT ids, NL-OMON ids, CTIS numbers or trial names (comma-separated) and
+click **Load**. NCT ids are read from ClinicalTrials.gov directly. The Dutch register and CTIS block browser
+requests, so the other queries go to Microsoft 365 Copilot with web search on. Without a Copilot connection the panel
+offers two steps instead, with no sign-in or token: **Copy question and open Copilot** (Copilot Chat with your work
+account; ChatGPT or Claude with web search work too), then paste the answer back and **Use answer**. Either way Copilot finds the registry records, copies the
+criteria and reports other registry ids, whether your site is listed, and protocol publications. When an NCT
+id turns up, the app fetches that record and uses its verbatim text (`verified: true`). Criteria only Copilot
+provided stay `verified: false`; the review document lists them as a high review point until the command below has
+confirmed them. Trial extraction itself always runs with web search off.
+
+Registry ids become trial `identifiers`; the source, retrieval method, own-site status and publications are kept in
+the trial extension `org.trialschema.source`.
+
+**Command line** (the reference for verbatim text):
+
 ```bash
 node ingestion/fetch_registries.mjs NCT05350722 NL-OMON52643 2024-510578-25-00   # add --lang nl for Dutch text
 ```
@@ -121,6 +143,16 @@ Fetches the eligibility criteria from ClinicalTrials.gov (API v2), the Dutch reg
 pages; an official API is available on request via ltr@ccmo.nl) and EU CTIS, and writes
 `ingestion/ignore/registry-<date>.json`. Upload that file in the app and run the extraction as usual. `--previous
 <earlier file>` lists what changed. The Dutch register and CTIS block browser requests, so this runs outside the app.
+
+Each row also carries `status`, `sites_nl` and `own_site`: true when a listed site contains one of the `--site "Name A,Name B"`
+names (case-insensitive; default `Maastro`, `--site ""` switches the check off), false when none does, null when the
+registry lists no sites. In the
+app the names are set in the Registries panel (**Your site, as registries list it**) and saved in the export.
+`--papers` adds up to five `protocol_publications` from Europe PMC (registry id or acronym, protocol/design papers,
+open access first) for criteria that only the protocol states. `--previous auto` compares with the newest earlier
+`ingestion/ignore/registry-*.json`, so a scheduled run is one fixed command line; it also reports a change in
+`own_site`. Use the same `--lang` on every scheduled run, or every row reports as changed. Weekly, e.g. cron:
+`0 6 * * 1 cd ~/git/maastro/trialschema && node ingestion/fetch_registries.mjs <ids…> --papers --previous auto`.
 
 ## Review document and checks
 
@@ -145,6 +177,10 @@ node tests/workspace-roundtrip.test.mjs
 node tests/prompt-quality.test.mjs
 node tests/timing.test.mjs
 node tests/registry-fetch.test.mjs
+node tests/registry-lookup.test.mjs
+node tests/token-paste.test.mjs
+node tests/ms-signin.test.mjs
+node tests/extensions-roundtrip.test.mjs
 uv run --with jsonschema python tests/timing-schema.test.py
 node --check app.js
 git diff --check

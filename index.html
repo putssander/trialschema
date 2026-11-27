@@ -128,12 +128,14 @@
           </svg>
           <select id="llmProviderSelect" class="bg-white text-xs border border-slate-200 rounded-lg px-2 py-1.5 ring-focus">
             <option value="openai">OpenAI</option>
-            <option value="copilot">Copilot token</option>
+            <option value="copilot">Microsoft 365 Copilot</option>
           </select>
           <input id="apiKeyInput" type="password" autocomplete="off" placeholder="sk-... OpenAI API Key"
             class="bg-transparent text-sm w-72 ring-focus" />
           <button id="saveKeyBtn"
             class="text-xs font-semibold px-2.5 py-1 rounded-lg bg-slate-900 text-white hover:bg-slate-700">Save</button>
+          <button id="msSignInBtn" type="button"
+            class="hidden text-xs font-semibold px-2.5 py-1 rounded-lg bg-slate-900 text-white hover:bg-slate-700">Sign in with Microsoft</button>
           <span id="keyStatus" class="text-[11px] text-slate-500"></span>
           <button id="copilotTokenHelpBtn" type="button"
             class="hidden text-[11px] font-semibold text-slate-500 hover:text-slate-900 underline decoration-slate-300 underline-offset-2">
@@ -201,12 +203,12 @@
               </button>
               <button id="ctgovSourceToggle" type="button" class="inline-flex items-center justify-center gap-1.5 text-[11px] font-semibold text-slate-600 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 hover:bg-slate-50">
                 <svg viewBox="0 0 24 24" class="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 21l-4.3-4.3M11 19a8 8 0 1 1 0-16 8 8 0 0 1 0 16z" stroke-linecap="round"/></svg>
-                Fetch CT.gov
+                Registries
               </button>
             </div>
           </div>
           <div id="ctgovSourcePanel" class="hidden mt-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 space-y-2">
-            <p class="text-[10.5px] text-slate-500 leading-snug">Paste one or more NCT ids. We'll pull the public CT.gov v2 record and stage it as the trial source.</p>
+            <p class="text-[10.5px] text-slate-500 leading-snug">NCT ids are read from ClinicalTrials.gov directly. Trial names, NL-OMON ids (onderzoekmetmensen.nl) and CTIS numbers are looked up by Microsoft 365 Copilot with web search; criteria it finds on ClinicalTrials.gov are replaced by the verbatim record. Separate several with commas.</p>
             <div class="flex flex-wrap items-center gap-2 text-[10.5px] text-slate-500">
               <a href="https://clinicaltrials.gov/search?" target="_blank" rel="noopener" class="brand-chip inline-flex items-center gap-1 rounded-full px-2 py-1 font-medium">
                 <svg viewBox="0 0 24 24" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 3h7v7M10 14 21 3M21 14v7h-7M3 10 14 21" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -218,13 +220,58 @@
               <button type="button" class="ctgov-example brand-chip brand-chip-green rounded-full px-2 py-1 font-medium" data-nct="NCT00188279">NCT00188279</button>
             </div>
             <div class="flex gap-2">
-              <input id="ctgovNctInput" type="text" placeholder="NCT04567890"
-                class="flex-1 text-[12px] bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 ring-focus uppercase tracking-wide" autocapitalize="characters" spellcheck="false" />
+              <input id="ctgovNctInput" type="text" placeholder="NCT04567890, NL-OMON52643, trial name"
+                class="flex-1 text-[12px] bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 ring-focus" spellcheck="false" />
               <button id="ctgovFetchBtn" type="button"
                 class="text-[11px] font-semibold rounded-lg px-3 py-1.5 text-white"
                 style="background:var(--ts-teal)">Load</button>
             </div>
             <div id="ctgovFetchStatus" class="hidden text-[11px] rounded-lg px-2.5 py-1.5"></div>
+            <div id="registryManual" class="hidden rounded-lg border border-cyan-200 bg-white px-2.5 py-2 space-y-2 text-[11px] text-slate-700">
+              <div class="flex items-center gap-2">
+                <span class="badge bg-cyan-100 text-cyan-800">1</span>
+                <button id="registryCopyPrompt" type="button" class="font-semibold rounded-lg px-2.5 py-1 text-white" style="background:var(--ts-teal)">Copy question and open Copilot</button>
+              </div>
+              <p class="pl-7 text-slate-500 leading-snug">Paste it in Copilot (your work account) and wait for the answer. Then copy the whole answer.</p>
+              <textarea id="registryPromptText" readonly rows="3" class="hidden w-full text-[11px] border border-slate-200 rounded-lg px-2 py-1" aria-label="Question for Copilot"></textarea>
+              <div class="flex items-start gap-2">
+                <span class="badge bg-cyan-100 text-cyan-800">2</span>
+                <textarea id="registryAnswer" rows="2" placeholder="Paste Copilot's answer here" class="flex-1 text-[11px] border border-slate-200 rounded-lg px-2 py-1 ring-focus"></textarea>
+                <button id="registryUseAnswer" type="button" class="font-semibold rounded-lg px-2.5 py-1 text-white bg-slate-900 hover:bg-slate-700">Use answer</button>
+              </div>
+              <p class="text-slate-400 leading-snug">No sign-in or token needed. ChatGPT or Claude work too, as long as web search is on.</p>
+            </div>
+            <label class="block text-[10.5px] text-slate-500">Your site, as registries list it
+              <input id="siteNamesInput" type="text" placeholder="e.g. Maastro, Maastricht UMC+"
+                class="mt-1 w-full text-[12px] bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 ring-focus" spellcheck="false" />
+              <span class="block mt-0.5 text-slate-400">A trial whose site list contains one of these names is marked as running at your site. Default Maastro; edit once, saved in this browser and in the export. Empty = no check.</span>
+            </label>
+            <details class="text-[10.5px] text-slate-600">
+              <summary class="font-semibold text-slate-500 hover:text-slate-800">Registry coverage</summary>
+              <table class="mt-1.5 w-full border-separate border-spacing-y-1">
+                <tbody>
+                  <tr><td class="pr-2 align-top">ClinicalTrials.gov</td>
+                    <td><span class="badge bg-emerald-100 text-emerald-800">Automatic</span> verbatim, read in the browser</td></tr>
+                  <tr><td class="pr-2 align-top">Dutch register<br><span class="text-slate-400">onderzoekmetmensen.nl</span></td>
+                    <td><span class="badge bg-cyan-100 text-cyan-800">Via Copilot</span> to be checked<br>
+                      <span class="badge bg-slate-200 text-slate-700">Command line</span> verbatim<br>
+                      <span class="badge bg-amber-100 text-amber-800">Upcoming</span> official API (CCMO)</td></tr>
+                  <tr><td class="pr-2 align-top">EU CTIS<br><span class="text-slate-400">euclinicaltrials.eu</span></td>
+                    <td><span class="badge bg-cyan-100 text-cyan-800">Via Copilot</span> to be checked<br>
+                      <span class="badge bg-slate-200 text-slate-700">Command line</span> verbatim, Dutch translation</td></tr>
+                  <tr><td class="pr-2 align-top">Protocol publications<br><span class="text-slate-400">Europe PMC</span></td>
+                    <td><span class="badge bg-cyan-100 text-cyan-800">Via Copilot</span> listed with the trial<br>
+                      <span class="badge bg-slate-200 text-slate-700">Command line</span> protocol papers (<code>--papers</code>)<br>
+                      <span class="badge bg-amber-100 text-amber-800">Upcoming</span> criteria only in the protocol</td></tr>
+                  <tr><td class="pr-2 align-top">Own-site check<br><span class="text-slate-400">names set above</span></td>
+                    <td><span class="badge bg-emerald-100 text-emerald-800">Automatic</span> ClinicalTrials.gov<br>
+                      <span class="badge bg-slate-200 text-slate-700">Command line</span> Dutch register, CTIS</td></tr>
+                  <tr><td class="pr-2 align-top">Dutch guidelines<br><span class="text-slate-400">richtlijnendatabase.nl</span></td>
+                    <td><span class="badge bg-amber-100 text-amber-800">Upcoming</span> explicit guidance for criteria that cite a guideline</td></tr>
+                </tbody>
+              </table>
+              <p class="mt-1 text-slate-400 leading-snug">All sources then go through the same extraction into explicit criteria (clarified text, strict operators, timing, routing). <em>To be checked</em>: Copilot copies the text; compare it with the register before use. <em>Command line</em>: <code>node ingestion/fetch_registries.mjs</code>, then upload its file.</p>
+            </details>
           </div>
           <div id="formatBanner" class="hidden mt-2 text-[11px] rounded-lg px-2.5 py-1.5"></div>
         </div>
@@ -303,34 +350,27 @@
     <div id="copilotTokenHelpModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 px-4">
       <div class="bg-white rounded-2xl shadow-xl max-w-lg w-full p-5">
         <div class="flex items-start gap-2">
-          <h3 class="text-sm font-bold text-slate-900">Microsoft 365 Copilot token mode</h3>
+          <h3 class="text-sm font-bold text-slate-900">Copilot token in three steps</h3>
           <button id="copilotTokenHelpClose" class="ml-auto text-slate-400 hover:text-slate-700" aria-label="Close">
             <svg viewBox="0 0 24 24" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18" stroke-linecap="round"/></svg>
           </button>
         </div>
-        <p class="mt-2 text-xs text-slate-600 leading-relaxed">
-          Token paste is a temporary testing path. A Microsoft Graph access token is short-lived and belongs to the signed-in work account. For normal end users, use a future <strong>Sign in with Microsoft</strong> flow instead of asking them to copy tokens.
-        </p>
-        <div class="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 leading-relaxed">
-          Only paste a token on trusted TrialSchema pages. The token is stored in this browser's <code>localStorage</code> and expires automatically.
-        </div>
+        <p class="mt-2 text-xs text-slate-600 leading-relaxed">Until Microsoft sign-in is set up for this site, TrialSchema uses a token you copy once an hour from Microsoft Graph Explorer.</p>
         <ol class="mt-3 text-xs text-slate-700 space-y-2 list-decimal pl-5">
-          <li>Open <a href="https://developer.microsoft.com/graph/graph-explorer" target="_blank" rel="noopener" class="text-blue-600 hover:underline">Microsoft Graph Explorer</a> and sign in with your work account.</li>
-          <li>Switch the endpoint version to <strong>beta</strong>, choose <strong>POST</strong>, and run <code class="text-[11px] bg-slate-100 rounded px-1">/copilot/conversations</code> with body <code class="text-[11px] bg-slate-100 rounded px-1">{}</code>.</li>
-          <li>Copy the returned conversation <code class="text-[11px] bg-slate-100 rounded px-1">id</code>, then run <code class="text-[11px] bg-slate-100 rounded px-1">/copilot/conversations/{id}/chat</code> with body <code class="text-[11px] bg-slate-100 rounded px-1">{"message":{"text":"Reply with OK."},"locationHint":{"timeZone":"Europe/Amsterdam"}}</code>.</li>
-          <li>If prompted, use <strong>Modify permissions</strong> or <strong>Consent to permissions</strong>. Your tenant admin may need to approve all Copilot Chat API delegated scopes.</li>
-          <li>If Graph Explorer exposes an <strong>Access token</strong> panel/menu, copy that bearer token after both calls work and paste it into TrialSchema's <strong>Copilot token</strong> field.</li>
-          <li>If no token copy option is available, use Postman or wait for the built-in Microsoft sign-in flow; end users should not need this manual step.</li>
+          <li><a id="graphExplorerLink" href="https://developer.microsoft.com/en-us/graph/graph-explorer?request=copilot%2Fconversations&amp;method=POST&amp;version=beta&amp;GraphUrl=https%3A%2F%2Fgraph.microsoft.com&amp;requestBody=e30%3D" target="_blank" rel="noopener" class="font-semibold text-blue-600 hover:underline">Open Graph Explorer</a> and sign in with your work account.</li>
+          <li><strong>First time only:</strong> run <code class="text-[11px] bg-slate-100 rounded px-1">POST beta /copilot/conversations</code> with body <code class="text-[11px] bg-slate-100 rounded px-1">{}</code> (the link fills this in). If asked, click <strong>Consent to permissions</strong>.</li>
+          <li>Open the <strong>Access token</strong> tab, copy the token and paste it in the header field. It is checked and saved at once; the header shows your account and the minutes left.</li>
         </ol>
-        <p class="mt-3 text-xs text-slate-500 leading-relaxed">
-          The token must target Microsoft Graph, belong to a work account with a Microsoft 365 Copilot add-on license, and include the delegated scopes <code class="text-[11px] bg-slate-100 rounded px-1">Sites.Read.All</code>, <code class="text-[11px] bg-slate-100 rounded px-1">Mail.Read</code>, <code class="text-[11px] bg-slate-100 rounded px-1">People.Read.All</code>, <code class="text-[11px] bg-slate-100 rounded px-1">OnlineMeetingTranscript.Read.All</code>, <code class="text-[11px] bg-slate-100 rounded px-1">Chat.Read</code>, <code class="text-[11px] bg-slate-100 rounded px-1">ChannelMessage.Read.All</code>, and <code class="text-[11px] bg-slate-100 rounded px-1">ExternalItem.Read.All</code>. If creating a conversation works but chat returns 403, the conversation-create check was not enough; verify the same <code class="text-[11px] bg-slate-100 rounded px-1">/chat</code> request in Graph Explorer. Tenant consent, the Copilot add-on license, or API entitlement may still be missing. TrialSchema sends prompt text only; it does not attach OneDrive or SharePoint files.
-        </p>
-        <p class="mt-2 text-xs text-slate-500 leading-relaxed">
-          If the chat response says <code class="text-[11px] bg-slate-100 rounded px-1">you don't have a valid license</code>, Graph permissions are not the blocker. The signed-in work account needs the Microsoft 365 Copilot add-on license assigned or activated, followed by a fresh token.
-        </p>
-        <p class="mt-2 text-xs text-slate-500 leading-relaxed">
-          If Graph Explorer returns <code class="text-[11px] bg-slate-100 rounded px-1">UnknownError</code> on <code class="text-[11px] bg-slate-100 rounded px-1">/copilot/conversations</code>, save the response request id and date for tenant admin or Microsoft support. That failure happens before TrialSchema sends any trial prompt.
-        </p>
+        <p class="mt-3 text-xs text-slate-500 leading-relaxed">The token stays in this browser and expires after about an hour. TrialSchema sends only prompt text to Copilot.</p>
+        <details class="mt-3 text-xs text-slate-500 leading-relaxed">
+          <summary class="font-semibold text-slate-600">It does not work</summary>
+          <ul class="mt-2 space-y-1.5 list-disc pl-5">
+            <li><strong>Missing permission</strong> in the header: in Graph Explorer, open <strong>Modify permissions</strong> and consent to Sites.Read.All, Mail.Read, People.Read.All, OnlineMeetingTranscript.Read.All, Chat.Read, ChannelMessage.Read.All and ExternalItem.Read.All. Some need your IT administrator. Then copy a fresh token.</li>
+            <li><strong>HTTP 403 on chat</strong>: test <code class="text-[11px] bg-slate-100 rounded px-1">POST /copilot/conversations/{id}/chat</code> in Graph Explorer with body <code class="text-[11px] bg-slate-100 rounded px-1">{"message":{"text":"Reply with OK."},"locationHint":{"timeZone":"Europe/Amsterdam"}}</code>. If it fails there too, the account lacks consent, the Copilot licence or API access.</li>
+            <li><strong>"You don't have a valid license"</strong>: your account needs a Microsoft 365 Copilot licence; permissions are not the problem.</li>
+            <li><strong>UnknownError</strong> when creating a conversation: keep the request id and date from the response for IT or Microsoft support.</li>
+          </ul>
+        </details>
       </div>
     </div>
 
@@ -515,6 +555,7 @@
     </details>
   </template>
 
+  <script src="config.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

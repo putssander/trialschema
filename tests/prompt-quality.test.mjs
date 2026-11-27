@@ -167,7 +167,7 @@ assert.ok(
   "app should expose Copilot token guidance for testing users",
 );
 assert.ok(
-  compactReadme.includes("Microsoft 365 Copilot Token Testing"),
+  compactReadme.includes("Copilot token paste"),
   "README should explain how to test Copilot token mode",
 );
 assert.ok(
@@ -187,11 +187,11 @@ assert.ok(
   "Copilot license errors should be surfaced clearly",
 );
 assert.ok(
-  includesText(readme, "Graph Explorer itself returns `UnknownError` on `POST /copilot/conversations`"),
+  includesText(readme, "For `UnknownError` on creating a conversation"),
   "README should explain upstream Graph Explorer create-conversation failures",
 );
 assert.ok(
-  includesText(readme, "Graph permissions are not the blocker"),
+  includesText(readme, "means the licence, not permissions"),
   "README should explain valid-license Copilot failures",
 );
 for (const scope of [
